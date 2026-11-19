@@ -46,7 +46,7 @@ const testGlobals = globalThis as {
   acTestEngineInfo?: () => CallResult<"engine.info">;
   acTestUserScripts?: { engine: ExtensionEngine };
   acTestSuggest?: (args: { url: string; id: number; profile: string }) => CallResult<"search.suggest"> | undefined;
-  acTestRenameDownload?: (args: { id: string; name: string }) => CallResult<"downloads.rename">;
+  acTestRenameFile?: (args: { path: string; name: string }) => CallResult<"downloads.renameFile">;
   acTestSuggestDownloadName?: (args: { path: string; filename: string }) => CallResult<"downloads.suggestName"> | Promise<CallResult<"downloads.suggestName">>;
   acTestDownloadNamerStatus?: () => CallResult<"downloads.namerStatus">;
 };
@@ -390,9 +390,9 @@ const fakeModules = {
     pause: () => null,
     resume: () => null,
     keep: () => null,
-    rename: ({ id, name }) => {
-      if (!testGlobals.acTestRenameDownload) throw new Error("the engine has no ac_downloads_rename");
-      return testGlobals.acTestRenameDownload({ id, name });
+    renameFile: ({ path, name }) => {
+      if (!testGlobals.acTestRenameFile) throw new Error("downloads.renameFile has no test fake yet");
+      return testGlobals.acTestRenameFile({ path, name });
     },
     suggestName: ({ path, filename }) => testGlobals.acTestSuggestDownloadName?.({ path, filename }) ?? { status: "unavailable" },
     namerStatus: () => testGlobals.acTestDownloadNamerStatus?.() ?? "unsupported",

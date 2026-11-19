@@ -68,8 +68,6 @@ typedef void (^ArdiaServiceReply)(id _Nullable value, NSString *_Nullable error)
 + (void)watchDownloadEvents;
 + (void)watchDownloads:(NSString *)profile NS_SWIFT_NAME(watchDownloads(profile:));
 + (void)downloadCommand:(NSString *)command id:(NSString *)downloadId NS_SWIFT_NAME(downloadCommand(_:id:));
-+ (void)renameDownload:(NSString *)downloadId name:(NSString *)name reply:(ArdiaServiceReply)reply
-    NS_SWIFT_NAME(renameDownload(_:name:reply:));
 
 + (void)siteSettings:(NSString *)profile origin:(NSString *)origin reply:(ArdiaServiceReply)reply
     NS_SWIFT_NAME(siteSettings(profile:origin:reply:));

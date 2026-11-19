@@ -43,7 +43,7 @@
   },
   "missing": {
     "autofill": ["settings", "setSettings", "showSuggestions"],
-    "downloads": ["rename", "suggestName", "namerStatus"],
+    "downloads": ["renameFile", "suggestName", "namerStatus"],
     "contentBlocker": ["state", "setEnabled", "setListEnabled", "isAllowed", "setAllowed", "hiddenElements", "hideElements", "restoreElements", "addList", "removeList", "devFailNextMessage", "devDelayNextLoad"],
     "engine": ["beginTracing", "endTracing", "isTracing", "cliTabTargets", "cliOwnsTab", "cliMoveOffscreen", "cliCloseOffscreenTabs"],
     "extensions": ["resolveInstallPrompt", "actionStates", "sidePanelUrl"],

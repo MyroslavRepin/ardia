@@ -21,11 +21,8 @@ public class DownloadsModule: Module {
     }
   }
 
-  static let rename: CallHandler = { args, reply in
-    let id = try args.text("id")
-    let name = try args.text("name")
-    guard !WebKitPageEngine().owns(id) else { return reply.fail("ERR_UNSUPPORTED", "WebKit downloads can't be renamed") }
-    ArdiaServices.renameDownload(id, name: name) { value, error in reply.service(value, error) }
+  static let renameFile: CallHandler = { args, reply in
+    reply.ok(DownloadNamer.renameFile(at: try args.text("path"), to: try args.text("name")))
   }
 
   static let suggestName: CallHandler = { args, reply in
@@ -39,7 +36,7 @@ public class DownloadsModule: Module {
     "pause": command("pause"),
     "resume": command("resume"),
     "keep": command("keep"),
-    "rename": rename,
+    "renameFile": renameFile,
     "suggestName": suggestName,
     "namerStatus": { _, reply in reply.ok(DownloadNamer.status()) },
     "settings": EngineCall.passing("ac_downloads_settings"),

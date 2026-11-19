@@ -48,6 +48,16 @@ enum DownloadNamer {
     return "unsupported"
   }
 
+  static func renameFile(at path: String, to name: String) -> [String: Any] {
+    guard !name.isEmpty, !name.contains("/"), !name.hasPrefix("."), name.utf8.count <= 255 else { return ["ok": false, "reason": "invalid"] }
+    var info = stat()
+    guard lstat(path, &info) == 0 else { return ["ok": false, "reason": "missing"] }
+    guard info.st_mode & S_IFMT == S_IFREG else { return ["ok": false, "reason": "invalid"] }
+    let target = URL(fileURLWithPath: path).deletingLastPathComponent().appendingPathComponent(name).path
+    if renamex_np(path, target, UInt32(RENAME_EXCL)) == 0 { return ["ok": true, "path": target] }
+    return ["ok": false, "reason": errno == EEXIST ? "exists" : "failed"]
+  }
+
   static func wordProcessing(_ type: UTType) -> Bool {
     ["org.openxmlformats.wordprocessingml.document", "com.microsoft.word.doc", "org.oasis-open.opendocument.text"]
       .compactMap { UTType($0) }

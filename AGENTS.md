@@ -80,7 +80,7 @@ For the architecture and the test tooling, read `docs/agent-brief.md`.
   whatever it needs from the browser becomes a public extension point any plugin can use, never a private hook.
   Dia's AI rows in `docs/dia-feature-parity.md` stay ⏸ until the plugin ships them.
   One exception in the base app, the owner's call on 2026-11-19: naming finished downloads by their content
-  (`docs/download-content-names.md`). It runs only on macOS 26+ with Apple's on-device Foundation Models, is off until
+  (`docs/download-content-names.md`), a layer in the app that renames the finished file on disk; Chromium isn't changed. It runs only on macOS 26+ with Apple's on-device Foundation Models, is off until
   the user turns it on, and nothing it reads leaves the Mac.
   The phone app has two exceptions, documented in `docs/phone.md`. Browse for Me uses the phone's model, cited
   excerpts, or the user's connected ChatGPT plan. Pinch to Summarize reads the open page. iPhone uses Apple

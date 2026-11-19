@@ -24,14 +24,10 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 let renames;
 function engineRenames(answer = () => "ok") {
   renames = [];
-  globalThis.acTestRenameDownload = ({ id, name }) => {
+  globalThis.acTestRenameFile = ({ path, name }) => {
     renames.push(name);
     const result = answer(name);
-    if (result === "ok") {
-      const d = S().downloads.find((x) => x.id === id);
-      S().upsertDownload({ ...d, filename: name, path: `/Users/me/Downloads/${name}` });
-    }
-    return result;
+    return result === "ok" ? { ok: true, path: `${path.slice(0, path.lastIndexOf("/"))}/${name}` } : { ok: false, reason: result };
   };
 }
 const suggests = (reply) => (globalThis.acTestSuggestDownloadName = () => reply);
@@ -79,7 +75,7 @@ test("the name is date_category_title.ext, with an unknown category as other", (
   assert.equal(contentFilename({ ...INVOICE, title: "Invoice" }, "x.pdf", FINISHED), "2026-10-31_invoice_invoice.pdf");
 });
 
-test("a download that finishes while Ardia watches is renamed through the engine and remembers its original name", async () => {
+test("a download that finishes while Ardia watches is renamed on disk and remembers its original name", async () => {
   noteContentNameEvent(download("d1", { state: "downloading" }));
   S().upsertDownload(download("d1"));
   noteContentNameEvent(download("d1"));
@@ -87,7 +83,8 @@ test("a download that finishes while Ardia watches is renamed through the engine
   const named = `2026-10-31_invoice_acme-cloud-hosting-october.pdf`;
   assert.deepEqual(renames, [named]);
   assert.equal(S().downloads.find((d) => d.id === "d1").filename, named);
-  assert.deepEqual(useContentNames.getState().names.d1, { original: "scan0042.pdf", named, showing: "named" });
+  assert.equal(S().downloads.find((d) => d.id === "d1").path, `/Users/me/Downloads/${named}`);
+  assert.deepEqual(useContentNames.getState().names.d1, { original: "scan0042.pdf", named, showing: "named", folder: "/Users/me/Downloads" });
   assert.deepEqual(useContentNames.getState().thinking, {});
   assert.equal(takeDownloadsPanelCounts().download_content_names, 1);
 });
@@ -99,11 +96,11 @@ test("history the engine replays at launch is never renamed", async () => {
   assert.deepEqual(renames, []);
 });
 
-test("a taken name gets a number, and the engine's refusal of anything else leaves the file alone", async () => {
-  engineRenames((name) => (name.endsWith("october.pdf") ? "conflict" : "ok"));
+test("a taken name gets a number, and any other refusal leaves the file alone", async () => {
+  engineRenames((name) => (name.endsWith("october.pdf") ? "exists" : "ok"));
   S().upsertDownload(download("d2"));
   assert.equal(await nameByContent(download("d2"), FINISHED), "2026-10-31_invoice_acme-cloud-hosting-october-2.pdf");
-  engineRenames(() => "invalid");
+  engineRenames(() => "failed");
   S().upsertDownload(download("d3"));
   assert.equal(await nameByContent(download("d3"), FINISHED), null);
   assert.equal(takeDownloadsPanelCounts().download_content_names_failed, 1);
@@ -124,7 +121,7 @@ test("nothing is renamed when the setting is off, the file is private or dangero
   assert.equal(takeDownloadsPanelCounts().download_content_names_unreadable, 1);
 });
 
-test("an unavailable model or an engine without renames stops quietly for the rest of the launch", async () => {
+test("an unavailable model or an app without file renames stops quietly for the rest of the launch", async () => {
   suggests({ status: "unavailable" });
   S().upsertDownload(download("a"));
   assert.equal(await nameByContent(download("a"), FINISHED), null);
@@ -132,19 +129,20 @@ test("an unavailable model or an engine without renames stops quietly for the re
   S().upsertDownload(download("b"));
   assert.equal(await nameByContent(download("b"), FINISHED), null, "the model said it can't, so the next one isn't asked");
   resetContentNamesForTests("available");
-  delete globalThis.acTestRenameDownload;
+  delete globalThis.acTestRenameFile;
   S().upsertDownload(download("c"));
   assert.equal(await nameByContent(download("c"), FINISHED), null);
-  assert.equal(takeDownloadsPanelCounts().download_content_names_failed, 0, "an older engine isn't a failure");
+  assert.equal(takeDownloadsPanelCounts().download_content_names_failed, 0, "an older app isn't a failure");
 });
 
-test("the arrow switches between the original and the suggested name through the engine", async () => {
+test("the arrow switches the file between the original and the suggested name", async () => {
   S().upsertDownload(download("d4"));
   const named = await nameByContent(download("d4"), FINISHED);
   const d = () => S().downloads.find((x) => x.id === "d4");
   assert.equal(contentNameToggle(d(), useContentNames.getState().names.d4), "original");
   assert.equal(await toggleContentName("d4"), true);
   assert.equal(d().filename, "scan0042.pdf");
+  assert.equal(d().path, "/Users/me/Downloads/scan0042.pdf");
   assert.equal(useContentNames.getState().names.d4.showing, "original");
   assert.equal(contentNameToggle(d(), useContentNames.getState().names.d4), "named");
   assert.equal(await toggleContentName("d4"), true);
@@ -154,6 +152,15 @@ test("the arrow switches between the original and the suggested name through the
   assert.equal(counts.download_content_name_restores, 1);
   S().upsertDownload({ ...d(), filename: "renamed-in-finder.pdf" });
   assert.equal(contentNameToggle(d(), useContentNames.getState().names.d4), null, "a name changed elsewhere offers no switch");
+});
+
+test("history the engine replays after a relaunch shows the name the file has now", async () => {
+  S().upsertDownload(download("d5"));
+  const named = await nameByContent(download("d5"), FINISHED);
+  S().upsertDownload(download("d5"));
+  noteContentNameEvent(download("d5"));
+  assert.equal(S().downloads.find((x) => x.id === "d5").filename, named, "the engine still says scan0042.pdf; the row keeps the file's name");
+  assert.equal(S().downloads.find((x) => x.id === "d5").path, `/Users/me/Downloads/${named}`);
 });
 
 test("the context menu offers the switch for a renamed file", () => {

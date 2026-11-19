@@ -398,14 +398,6 @@ NSMutableDictionary<NSString *, NSString *> *DownloadProfiles() {
       completion:^(NSDictionary *) {}];
 }
 
-+ (void)renameDownload:(NSString *)downloadId name:(NSString *)name reply:(ArdiaServiceReply)reply {
-  NSString *profile = DownloadProfiles()[downloadId ?: @""] ?: @"";
-  [self callBase:@"ac_downloads_rename" profile:profile args:@{@"id" : downloadId ?: @"", @"name" : name ?: @""}
-      completion:Answering(reply, ^id(NSDictionary *result) {
-        return [result[@"result"] isKindOfClass:NSString.class] ? result[@"result"] : @"failed";
-      })];
-}
-
 + (void)siteSettings:(NSString *)profile origin:(NSString *)origin reply:(ArdiaServiceReply)reply {
   [self call:@"ac_site_settings_get" profile:profile args:@{@"origin" : origin ?: @""} completion:Answering(reply, ^id(NSDictionary *result) {
     return [result[@"settings"] isKindOfClass:NSDictionary.class] ? result[@"settings"] : @{};

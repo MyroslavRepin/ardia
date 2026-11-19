@@ -2,11 +2,10 @@ import { create } from "zustand";
 import {
   downloadNamerStatus,
   onDownload,
-  renameDownload,
+  renameDownloadFile,
   suggestDownloadName,
   type Download,
   type DownloadNamerStatus,
-  type DownloadRenameResult,
 } from "../../platform/downloads";
 import { readDocument, writeDocument } from "../../platform/documents";
 import { isFields } from "../../lib/decode";
@@ -20,7 +19,7 @@ import { warnFor } from "../telemetry/logs";
 import { contentFilename, withNumber } from "./contentName";
 import { downloadSession } from "./downloadsSlice";
 
-export type ContentName = { original: string; named: string; showing: "named" | "original" };
+export type ContentName = { original: string; named: string; showing: "named" | "original"; folder: string };
 
 type ContentNamesState = {
   names: Record<string, ContentName>;
@@ -48,9 +47,9 @@ function readNames(): Record<string, ContentName> {
   if (!doc || !isFields(doc.names)) return names;
   for (const [id, entry] of Object.entries(doc.names)) {
     if (!isFields(entry)) continue;
-    const { original, named, showing } = entry;
-    if (typeof original !== "string" || typeof named !== "string" || (showing !== "named" && showing !== "original")) continue;
-    names[id] = { original, named, showing };
+    const { original, named, showing, folder } = entry;
+    if (typeof original !== "string" || typeof named !== "string" || typeof folder !== "string" || (showing !== "named" && showing !== "original")) continue;
+    names[id] = { original, named, showing, folder };
   }
   return names;
 }
@@ -77,8 +76,10 @@ function setThinking(id: string, on: boolean) {
 }
 
 const currentDownload = (id: string) => useBrowser.getState().downloads.find((d) => d.id === id);
+const folderOf = (path: string) => path.slice(0, path.lastIndexOf("/"));
+const shownName = (name: ContentName) => (name.showing === "named" ? name.named : name.original);
 
-let engineRenames = true;
+let renamesFiles = true;
 let modelReady = true;
 
 export function contentNameEligible(d: Download): boolean {
@@ -89,17 +90,22 @@ export function contentNameEligible(d: Download): boolean {
 
 const namingOn = () =>
   PLATFORM_FEATURES.namesDownloadsOnDevice &&
-  engineRenames &&
+  renamesFiles &&
   modelReady &&
   useContentNames.getState().status !== "unsupported" &&
   useBrowser.getState().settings.nameDownloadsByContent;
 
-async function renameTo(id: string, name: string): Promise<string | null> {
+function showFile(id: string, path: string) {
+  const d = currentDownload(id);
+  if (d) useBrowser.getState().upsertDownload({ ...d, path, filename: path.slice(path.lastIndexOf("/") + 1) });
+}
+
+async function renameTo(path: string, name: string): Promise<string | null> {
   const attempts = [name, ...NUMBERED_TRIES.map((n) => withNumber(name, n))];
   for (const attempt of attempts) {
-    const result: DownloadRenameResult = await renameDownload(id, attempt);
-    if (result === "ok") return attempt;
-    if (result !== "conflict") return null;
+    const result = await renameDownloadFile(path, attempt);
+    if (result.ok) return result.path;
+    if (result.reason !== "exists") return null;
   }
   return null;
 }
@@ -112,18 +118,17 @@ function oneAtATime<T>(work: () => Promise<T>): Promise<T> {
   return turn;
 }
 
-const engineLacksRename = (error: unknown) => /has no ac_downloads_rename|unknown command/.test(String(error));
+const appLacksRename = (error: unknown) => /renameFile/.test(String(error));
 
 export async function nameByContent(d: Download, finished = new Date()): Promise<string | null> {
   if (!namingOn() || !contentNameEligible(d) || useContentNames.getState().names[d.id]) return null;
   const consent = consentToken();
-  const moved = await downloadSettled(d.id);
-  if (moved?.ok) return null;
-  const now = currentDownload(d.id);
-  if (!now || now.path !== d.path || now.filename !== d.filename) return null;
+  await downloadSettled(d.id);
+  const file = currentDownload(d.id);
+  if (!file || file.state !== "finished" || !file.path) return null;
   setThinking(d.id, true);
   try {
-    const suggestion = await oneAtATime(() => suggestDownloadName(d.path, d.filename));
+    const suggestion = await oneAtATime(() => suggestDownloadName(file.path, file.filename));
     if (suggestion.status === "unavailable") {
       modelReady = false;
       noteDownloadsPanel("contentNameUnavailable", consent);
@@ -133,18 +138,21 @@ export async function nameByContent(d: Download, finished = new Date()): Promise
       noteDownloadsPanel(suggestion.status === "unreadable" ? "contentNameUnreadable" : "contentNameFailed", consent);
       return null;
     }
-    const named = contentFilename(suggestion, d.filename, finished);
-    if (!named || named === d.filename) return null;
-    const landed = await renameTo(d.id, named);
+    const named = contentFilename(suggestion, file.filename, finished);
+    if (!named || named === file.filename) return null;
+    if (currentDownload(d.id)?.path !== file.path) return null;
+    const landed = await renameTo(file.path, named);
     if (!landed) {
       noteDownloadsPanel("contentNameFailed", consent);
       return null;
     }
-    remember(d.id, { original: d.filename, named: landed, showing: "named" });
+    const landedName = landed.slice(landed.lastIndexOf("/") + 1);
+    remember(d.id, { original: file.filename, named: landedName, showing: "named", folder: folderOf(landed) });
+    showFile(d.id, landed);
     noteDownloadsPanel("contentNamed", consent);
-    return landed;
+    return landedName;
   } catch (error) {
-    if (engineLacksRename(error)) engineRenames = false;
+    if (appLacksRename(error)) renamesFiles = false;
     else noteDownloadsPanel("contentNameFailed", consent);
     return null;
   } finally {
@@ -166,19 +174,30 @@ export async function toggleContentName(id: string): Promise<boolean> {
   const to = contentNameToggle(d, name);
   if (!to) return false;
   const consent = consentToken();
-  let result: DownloadRenameResult;
+  let landed: string | null = null;
+  let reason = "failed";
   try {
-    result = await renameDownload(id, to === "original" ? name.original : name.named);
+    const result = await renameDownloadFile(d.path, to === "original" ? name.original : name.named);
+    if (result.ok) landed = result.path;
+    else reason = result.reason;
   } catch {
-    result = "failed";
+    landed = null;
   }
-  if (result !== "ok") {
-    warnFor(consent, `[downloads] couldn't switch a download to its ${to} name (${result})`);
+  if (!landed) {
+    warnFor(consent, `[downloads] couldn't switch a download to its ${to} name (${reason})`);
     return false;
   }
-  remember(id, { ...name, showing: to });
+  remember(id, { ...name, showing: to, folder: folderOf(landed) });
+  showFile(id, landed);
   noteDownloadsPanel(to === "original" ? "contentNameReverted" : "contentNameRestored", consent);
   return true;
+}
+
+function keepShownName(d: Download) {
+  const name = useContentNames.getState().names[d.id];
+  if (!name || d.state !== "finished" || !d.path) return;
+  const path = `${name.folder}/${shownName(name)}`;
+  if (d.path !== path) showFile(d.id, path);
 }
 
 const live = new Set<string>();
@@ -189,6 +208,7 @@ export function noteContentNameEvent(d: Download) {
     if (live.size > LIVE_CAP) live.delete(live.values().next().value!);
     return;
   }
+  keepShownName(d);
   if (!live.delete(d.id) || d.state !== "finished") return;
   void nameByContent(d);
 }
@@ -209,7 +229,7 @@ export function startContentNames() {
 
 export function resetContentNamesForTests(status: DownloadNamerStatus = "available") {
   live.clear();
-  engineRenames = true;
+  renamesFiles = true;
   modelReady = true;
   useContentNames.setState({ names: {}, thinking: {}, status });
 }

@@ -377,24 +377,6 @@ constexpr CommandEntry kCommands[] = {
      }},
 };
 
-const char* RenameResultName(DownloadItem::DownloadRenameResult result) {
-  switch (result) {
-    case DownloadItem::DownloadRenameResult::SUCCESS:
-      return "ok";
-    case DownloadItem::DownloadRenameResult::FAILURE_NAME_CONFLICT:
-      return "conflict";
-    case DownloadItem::DownloadRenameResult::FAILURE_NAME_TOO_LONG:
-      return "tooLong";
-    case DownloadItem::DownloadRenameResult::FAILURE_NAME_INVALID:
-      return "invalid";
-    case DownloadItem::DownloadRenameResult::FAILURE_UNAVAILABLE:
-      return "unavailable";
-    case DownloadItem::DownloadRenameResult::FAILURE_UNKNOWN:
-      return "failed";
-  }
-  return "failed";
-}
-
 base::DictValue DownloadSettings(Profile* profile) {
   DownloadPrefs* prefs = DownloadPrefs::FromBrowserContext(profile);
   return base::DictValue()
@@ -449,29 +431,4 @@ AC_PROFILE_CALL(ac_downloads_command) {
   if (download::DownloadItem* item = ardia::DownloadFor(call)) {
     entry->second(item, call.TakeReply());
   }
-}
-
-AC_PROFILE_CALL(ac_downloads_rename) {
-  const base::FilePath name =
-      base::FilePath::FromUTF8Unsafe(call.String("name"));
-  if (name.empty() || name.IsAbsolute() || name.BaseName() != name ||
-      name.ReferencesParent()) {
-    return call.TakeReply().Error("invalid name");
-  }
-  download::DownloadItem* item = ardia::DownloadFor(call);
-  if (!item) {
-    return;
-  }
-  if (item->GetState() != download::DownloadItem::COMPLETE) {
-    return call.TakeReply().Error("not finished");
-  }
-  item->Rename(
-      name,
-      base::BindOnce(
-          [](ardia::Reply reply,
-             download::DownloadItem::DownloadRenameResult result) {
-            reply.Send(base::DictValue().Set(
-                "result", ardia::RenameResultName(result)));
-          },
-          call.TakeReply()));
 }

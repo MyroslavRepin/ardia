@@ -15,15 +15,16 @@ When it's on, each download that finishes while Ardia watches it is read on this
 - **The name** (`state/downloads/contentName.ts`): the date the content states when it's a real one, else the day the
   download finished; the category from `CONTENT_NAME_CATEGORIES`, else `other`; the title as an ASCII slug of at most
   48 characters, without the category word; the original extension, lowercased (`.tar.gz` and friends kept whole).
-- **Through Chromium's download item.** The rename is `downloads.rename` → `ac_downloads_rename` →
-  `DownloadItem::Rename`, so Chromium's own record, history and Show in Finder follow the new name. A taken name gets
-  `-2`, `-3`, `-4`. An engine without `ac_downloads_rename` turns the feature off for the launch without a word.
-- **Skipped:** history the engine replays at launch, private and off-the-record downloads, dangerous ones, WebKit
-  downloads, and any download a `download.deciding` hook moved (the move happens outside Chromium, so the item no
-  longer points at the file).
-- **Revert.** `download-names.json` (version 1) keeps each renamed download's original and suggested names by
-  download id (the last 500). The row's arrow (on hover in the panel, beside Show in Finder on the Downloads page) and
-  the context menu switch between the two, through the engine again. A name changed elsewhere (Finder) offers no switch.
+- **A layer on top of Chromium.** The download finishes as usual; then the app renames the file on disk
+  (`downloads.renameFile`, `DownloadNamer.renameFile`: `renamex_np` with `RENAME_EXCL` in the same folder, regular files
+  only, never overwriting) and updates the row. A taken name gets `-2`, `-3`, `-4`. Chromium itself isn't changed and
+  keeps the original name in its own history; at every launch the replayed row is shown with the file's current name
+  and path from `download-names.json`, so the list, Open and Show in Finder follow the file.
+- **Skipped:** history the engine replays at launch, private and off-the-record downloads, dangerous ones and WebKit
+  downloads. A download a `download.deciding` hook moved is named in its new folder, after the move.
+- **Revert.** `download-names.json` (version 1) keeps each renamed download's original and suggested names, which
+  one the file has now and its folder, by download id (the last 500). The row's arrow (on hover in the panel, beside
+  Show in Finder on the Downloads page) and the context menu rename the file back and forth. A name changed elsewhere (Finder) offers no switch.
 - **Motion.** While the model reads, the name shimmers (two soft highlight bands sweep across it, 1.3 s, then a 0.35 s
   rest) and the status line says "Finding a name…". The new name arrives in a 380 ms morph: the old one lifts 5 pt and
   fades, the new one rises into place. Reduce Motion turns the sweep into a gentle pulse and the morph into a crossfade.

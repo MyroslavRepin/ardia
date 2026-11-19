@@ -20,7 +20,7 @@ export type Download = {
 
 export type DownloadSettings = { folder: string; askWhereToSave: boolean; managed: boolean };
 
-export type DownloadRenameResult = "ok" | "conflict" | "tooLong" | "invalid" | "unavailable" | "failed";
+export type DownloadFileRename = { ok: true; path: string } | { ok: false; reason: "exists" | "missing" | "invalid" | "failed" };
 
 export type DownloadNameSuggestion =
   | { status: "ok"; category: string; title: string; date: string }
