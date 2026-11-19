@@ -25,7 +25,7 @@ import { spaceToShow, tabsInSpace } from "../tabs/spaces";
 import { currentPreferences, loadPreferences } from "../settings/store";
 import type { VisitTransition, Visit } from "../store/browserDatabase";
 import { enterTarget, rowTarget, resolve, type TrayRow } from "../search/omnibox";
-import { applySearchEngine, dismissSearch, presentSearch, refreshSearchRows, searchState, useSearch } from "../search/store";
+import { applySearchEngine, dismissSearch, presentSearch, refreshSearchRows, searchState, useSearch, withdrawPasteOffer } from "../search/store";
 import {
   archiveDueTabs,
   loadArchive,
@@ -48,7 +48,8 @@ import { labTrace } from "../../platform/lab";
 import { pictureCaptured, pictureLanded } from "../tabs/pictures";
 import { deckOrder, findTab, isPrivateOnScreen, isPrivateTab, selectedTab, tabBefore } from "../tabs/tabsState";
 import { setHidesFromRecents } from "../../platform/links";
-import { copyText, pasteText } from "../../platform/system";
+import { copyText, pasteForGo } from "../../platform/system";
+import { pasteTap } from "../search/pasteRow";
 import { noteSnapshotPageTop, noteSnapshotShown, pictureKey, picturePainted, whenPicturePainted } from "../../lib/shownSnapshots";
 import { DECK_PULL } from "../../lib/deckPull";
 import { runOnUI } from "react-native-reanimated";
@@ -175,8 +176,11 @@ export function activateRow(row: TrayRow) {
     return;
   }
   if (row.kind === "paste") {
-    void settled(() => pasteText(), "").then((text) => {
-      if (text.trim()) submitSearch(text.trim());
+    void settled(() => pasteForGo(), "").then((pasted) => {
+      const tap = pasteTap(row.offer, pasted);
+      if (!useTabs.getState().incognito) countUsage(tap.count);
+      if (tap.go) submitSearch(tap.go);
+      else withdrawPasteOffer();
     });
     return;
   }

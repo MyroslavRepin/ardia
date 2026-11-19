@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { TrayRow } from "./omnibox.ts";
-import { PASTE_ROW_KEY, withPasteRow } from "./pasteRow.ts";
+import { PASTE_ROW_KEY, pasteTap, withPasteRow } from "./pasteRow.ts";
 
 const recent: TrayRow = { key: "q:otters", kind: "query", title: "otters", url: "https://duckduckgo.com/?q=otters", query: "otters" };
 
@@ -18,4 +18,13 @@ test("Paste and Go leads the empty tray when something was copied", () => {
 test("the paste row goes once anything is typed, or with nothing copied", () => {
   assert.deepEqual(withPasteRow([recent], "ot", "text"), [recent]);
   assert.deepEqual(withPasteRow([recent], "", null), [recent]);
+});
+
+test("a tap goes to what was pasted, counted as the link or text the row offered", () => {
+  assert.deepEqual(pasteTap("link", "  https://ardia.dev/ \n"), { go: "https://ardia.dev/", count: "paste_and_go_links" });
+  assert.deepEqual(pasteTap("text", "sea otters"), { go: "sea otters", count: "paste_and_go_texts" });
+});
+
+test("a tap that reads nothing, as when the paste prompt is refused, goes nowhere", () => {
+  for (const pasted of [null, undefined, "", "  \n"]) assert.deepEqual(pasteTap("link", pasted), { go: null, count: "paste_and_go_unread" });
 });
