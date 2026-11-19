@@ -118,15 +118,16 @@
     const policy = document.featurePolicy;
     const allowsFeature = policy && policy.allowsFeature;
     installZoomLevels();
-    const controllerPrototype = controllerProto();
     const isPrototypeOf = Object.prototype.isPrototypeOf;
     const NativeTypeError = TypeError;
-    const brandedController = nativeZoomLevels;
     const isController = (value) => {
       if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
-      if (!brandedController) return !!controllerPrototype && apply(isPrototypeOf, controllerPrototype, [value]);
+      if (!nativeZoomLevels) {
+        const controllerPrototype = controllerProto();
+        return !!controllerPrototype && apply(isPrototypeOf, controllerPrototype, [value]);
+      }
       try {
-        apply(brandedController, value, []);
+        apply(nativeZoomLevels, value, []);
         return true;
       } catch (error) {
         return !(error instanceof NativeTypeError);

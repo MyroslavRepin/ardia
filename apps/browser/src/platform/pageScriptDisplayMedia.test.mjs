@@ -411,3 +411,18 @@ test("the controller is read once, and a site's wrapper of getDisplayMedia doesn
   p.install();
   assert.notEqual(world.CaptureController.prototype.getSupportedZoomLevels, native, "turning the picker back on patches the controller again, wrapper or not");
 });
+
+test("a CaptureController that only appears after the script first ran is still accepted and answered", async () => {
+  const world = captureWorld();
+  const late = { MediaStream: world.window.MediaStream, MediaStreamTrack: world.window.MediaStreamTrack };
+  const videoTrack = world.track("browser");
+  const p = page({ active: true, window: late, stream: world.streamOf(videoTrack) });
+  late.CaptureController = world.CaptureController;
+  p.install();
+  const controller = new world.CaptureController();
+  const pending = p.shim.call(p.devices, { video: true, controller });
+  assert.equal(p.sent.at(-1)?.data.controller, true);
+  p.handlers.displayMedia({ id: p.sent.at(-1).data.id, sourceId: "browser:1", audio: false });
+  await pending;
+  assert.deepEqual(controller.getSupportedZoomLevels(), []);
+});
