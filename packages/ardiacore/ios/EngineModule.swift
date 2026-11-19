@@ -54,6 +54,14 @@ public class EngineModule: Module {
       ArdiaHost.cliCloseOffscreenTabs()
       reply.ok()
     },
+    "cliPluginCredential": { args, reply in
+      if let revoke = try args.optionalText("revoke") {
+        EngineCall.passing("ac_cli_plugin_credential", profile: args.profile, args: ["revoke": revoke], reply: reply)
+        return
+      }
+      let tab = ArdiaHost.chromeTabId(ofTab: try args.text("tabId"))
+      EngineCall.passing("ac_cli_plugin_credential", profile: args.profile, args: ["tab": tab], reply: reply)
+    },
     "setCliActiveTab": { args, reply in
       let active = try args.optionalText("tabId").map { ArdiaHost.chromeTabId(ofTab: $0) } ?? -1
       EngineCall.passing("ac_cli_control", profile: args.profile, args: ["active": active], reply: reply)

@@ -39,7 +39,9 @@
 #include "base/timer/timer.h"
 #include "ardia/core/ac_host_visibility.h"
 #include "ardia/core/ac_windowless_page.h"
+#include "chrome/browser/ardia/ac_cli_file_picker.h"
 #include "chrome/browser/ardia/ac_cli_owned_tabs.h"
+#include "chrome/browser/ardia/ac_cli_plugin_credentials.h"
 #include "chrome/browser/ardia/ac_cli_token_policy.h"
 #include "chrome/browser/ardia/ac_engine.h"
 #include "chrome/browser/browser_process.h"
@@ -178,7 +180,7 @@ class ControlServer {
     g_ardia_devtools_active_target = &ActiveTarget;
     g_ardia_devtools_token_client = &TokenClientFor;
     g_ardia_devtools_may_attach = &TokenClientMayAttach;
-    g_ardia_devtools_may_input = &TokenClientMayInput;
+    InstallFilePickerAnswers();
     terminating_ = browser_shutdown::AddAppTerminatingCallback(
         base::BindOnce(&ControlServer::Quit, base::Unretained(this)));
     if (PrefService* local_state = LocalState()) {
@@ -256,6 +258,13 @@ class ControlServer {
     status.Set("windowlessPages", base::DictValue()
                                       .Set("given", windowless.given)
                                       .Set("missed", windowless.missed));
+    status.Set("commandsByDomain", TokenCommandsByDomain());
+    status.Set("filePickerAnswers", FilePickerAnswerTotals());
+    const PluginTotals& plugins = PluginTotalsSoFar();
+    status.Set("pluginCredentials", base::DictValue()
+                                        .Set("minted", plugins.minted)
+                                        .Set("revoked", plugins.revoked)
+                                        .Set("refused", plugins.refused));
     if (ardiacore::TestFlag("nativeDragRefused")) {
       status.Set("nativeDragsRefused", true);
     }
@@ -275,6 +284,7 @@ class ControlServer {
       case State::kRunning:
         status.Set("state", "on");
         status.Set("port", port_);
+        status.Set("browser", browser_path_);
         break;
     }
     status.Set("connections", static_cast<int>(connections_));
@@ -310,21 +320,31 @@ class ControlServer {
 
   static std::unique_ptr<ArdiaDevToolsTokenClient> TokenClientFor(
       const content::DevToolsSocketFactory* factory,
+      std::string_view token,
       content::DevToolsAgentHostClient* client,
       content::DevToolsAgentHost* host) {
-    ControlServer& self = Get();
-    if (!factory || factory != self.factory_ ||
-        self.state_ != State::kRunning) {
+    if (AcceptsCli(factory, token)) {
+      return CreateTokenClient(client, host, TokenKind::kCli, std::nullopt);
+    }
+    if (!Serving(factory)) {
       return nullptr;
     }
-    return CreateTokenClient(client, host);
+    std::optional<PluginScope> scope = PluginScopeForSecret(token);
+    return scope ? CreateTokenClient(client, host, TokenKind::kPlugin,
+                                     std::move(scope))
+                 : nullptr;
   }
 
-  static bool Accepts(const content::DevToolsSocketFactory* factory,
-                      std::string_view token) {
+  static bool Serving(const content::DevToolsSocketFactory* factory) {
     ControlServer& self = Get();
-    if (!factory || factory != self.factory_ ||
-        self.state_ != State::kRunning || self.token_.empty() ||
+    return factory && factory == self.factory_ &&
+           self.state_ == State::kRunning;
+  }
+
+  static bool AcceptsCli(const content::DevToolsSocketFactory* factory,
+                         std::string_view token) {
+    ControlServer& self = Get();
+    if (!Serving(factory) || self.token_.empty() ||
         token.size() != self.token_.size()) {
       return false;
     }
@@ -332,7 +352,21 @@ class ControlServer {
                                   base::as_byte_span(self.token_));
   }
 
+  static bool Accepts(const content::DevToolsSocketFactory* factory,
+                      std::string_view token) {
+    return AcceptsCli(factory, token) ||
+           (Serving(factory) && PluginScopeForSecret(token).has_value());
+  }
+
  public:
+  std::string Endpoint() const {
+    if (state_ != State::kRunning) {
+      return std::string();
+    }
+    return base::StrCat(
+        {"ws://127.0.0.1:", base::NumberToString(port_), browser_path_});
+  }
+
   void SetActiveTab(std::optional<int> tab_id) {
     active_.reset();
     if (!tab_id) {
@@ -346,7 +380,7 @@ class ControlServer {
   static bool ActiveTarget(const content::DevToolsSocketFactory* factory,
                            std::string_view token,
                            std::string* target_id) {
-    if (!Accepts(factory, token)) {
+    if (!AcceptsCli(factory, token)) {
       return false;
     }
     target_id->clear();
@@ -388,6 +422,7 @@ class ControlServer {
     if (state_ == State::kStarting) {
       state_ = State::kPublishing;
       port_ = port;
+      browser_path_ = std::string(browser_path);
       connections_ = 0;
       base::DictValue file;
       file.Set("port", port);
@@ -507,6 +542,7 @@ class ControlServer {
   std::string token_;
   raw_ptr<const content::DevToolsSocketFactory> factory_ = nullptr;
   int port_ = 0;
+  std::string browser_path_;
   size_t connections_ = 0;
   std::string error_;
   bool quitting_ = false;
@@ -519,6 +555,12 @@ class ControlServer {
   scoped_refptr<base::SequencedTaskRunner> file_runner_;
 };
 
+}
+}
+
+namespace ardia {
+std::string TokenServerEndpoint() {
+  return ControlServer::Get().Endpoint();
 }
 }
 

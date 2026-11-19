@@ -326,7 +326,7 @@ constexpr size_t kDocumentLimit = linux_policy::kDocumentLimit;
 constexpr size_t kAssetLimit = 32 * 1024 * 1024;
 constexpr char kSessionName[] = "linux-session.json";
 constexpr const char* kCliControlCalls[] = {"engine.cliControlStatus", "engine.setCliControl",
-                                            "engine.setCliActiveTab"};
+                                            "engine.setCliActiveTab", "engine.cliPluginCredential"};
 
 base::FilePath NativeMessagingManifest(const std::string& host_name) {
   std::unique_ptr<base::Environment> environment = base::Environment::Create();
@@ -1999,9 +1999,22 @@ class HostMessageHandler : public content::WebUIMessageHandler,
         request.Set("active", -1);
       }
     }
+    const char* engine_call = "ac_cli_control";
+    if (name == "engine.cliPluginCredential") {
+      engine_call = "ac_cli_plugin_credential";
+      if (const std::string* revoke = input.FindString("revoke")) {
+        request.Set("revoke", *revoke);
+      } else {
+        const std::string* tab = input.FindString("tabId");
+        TabBinding* binding = tab ? host_->BindingForKey(*tab) : nullptr;
+        content::WebContents* contents = binding ? binding->contents() : nullptr;
+        if (!contents) return Fail(id, "ERR_ENGINE", "engine.cliPluginCredential requires {tabId} or {revoke}");
+        request.Set("tab", TabId(contents));
+      }
+    }
     const auto json = base::WriteJson(request);
     if (!json) return Fail(id, "ERR_BAD_REPLY", "CLI control arguments are not JSON");
-    ac_engine_call("ac_cli_control", "", json->c_str(), Replied, new EngineReply{name, weak_factory_.GetWeakPtr(), id});
+    ac_engine_call(engine_call, "", json->c_str(), Replied, new EngineReply{name, weak_factory_.GetWeakPtr(), id});
   }
   void ProfileFail(const std::string& id, ardiacore::linux_profiles::ProfileError error) {
     Fail(id, ardiacore::linux_profiles::ProfileErrorCode(error), ardiacore::linux_profiles::ProfileErrorMessage(error));

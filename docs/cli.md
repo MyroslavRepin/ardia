@@ -74,3 +74,39 @@ Settings › Advanced.
 - **Telemetry.** The command's events go to the same service under `source = 'ardia-cli'` (the dashboard's CLI health
   page reads them); the What's Sent copy in the app lists them, since the consent is the app's. A new CLI event needs
   that copy changed here.
+
+## Plugin credentials
+
+The token server (`docs/engine-build.md` › `chromium-devtools-control-token.patch`) takes two kinds of secret. The
+token in `<user data dir>/Chromium/ArdiaControl.json` is the owner's `ardia` command (kind `cli`, a full DevTools
+client). A plugin's browse gets a credential of its own (kind `plugin`: web pages in one window and profile, nothing
+else), minted per plugin activity. A plugin process never reads `ArdiaControl.json`, and a credential never travels in
+argv (any process can read another's argv through `sysctl KERN_PROCARGS2`), in the environment, in a file or in a log.
+
+- **Mint.** The app calls `engine.cliPluginCredential {tabId}` (engine call `ac_cli_plugin_credential`, args
+  `{"tab": <Chrome tab id>}`; the Mac's `EngineModule.swift` and Linux's `ac_linux_host.cc` turn the app's tab id into
+  Chrome's). The scope is the window that tab is in (its `SessionID`) and that window's profile (path and whether it
+  is off the record), fixed at mint time. The reply is `{"id", "credential", "window", "endpoint"}`:
+  - `id`: `plugin-` and 16 hex digits; it names the credential for revoking and is not secret;
+  - `credential`: the secret, `p.` and 43 base64url characters (45 ASCII bytes, no padding, no newline);
+  - `window`: the scope's window `SessionID`;
+  - `endpoint`: `ws://127.0.0.1:<port>/devtools/browser/<id>` while the token server runs, else `""` (turn control
+    on, then mint again; a credential minted while it's off still works once it's on, but the reply can't say where).
+
+  An unknown or closed tab answers the error `no such tab`.
+- **Revoke.** `engine.cliPluginCredential {revoke: <id>}` (engine args `{"revoke": "<id>"}`) answers
+  `{"revoked": true}`, or `false` for an unknown id. It forgets the credential and closes every connection made with
+  it. The app revokes when the activity ends; credentials also go when the browser quits.
+- **Handing it to the CLI child.** The app creates a pipe, writes the credential to it and closes its write end, and
+  passes the read end to the child as an inherited fd (`posix_spawn_file_actions_adddup2`; with
+  `POSIX_SPAWN_CLOEXEC_DEFAULT` nothing else leaks). It sets `ARDIA_PLUGIN_CREDENTIAL_FD=<n>`, the fd number only, and
+  `ARDIA_PLUGIN_ENDPOINT=<endpoint>` (not secret: the socket refuses it without the credential). `n` is the app's
+  choice; fd 3 is already the plugin channel (`ARDIA_PLUGIN_FD`), so plugin children use 4.
+- **Framing on that fd: the raw credential bytes, then EOF.** No newline, no length prefix, no JSON. The 45 bytes fit
+  in one pipe write (under `PIPE_BUF`), so the app writes before or right after the spawn without blocking. The reader
+  reads until EOF, at most 256 bytes, then closes the fd. It refuses anything that isn't exactly `p.` followed by
+  base64url characters (a trailing newline included), and an fd that is missing, isn't readable or is a terminal. The
+  fd must not reach the child's own children: it arrives without `FD_CLOEXEC`, so the child closes it as soon as it
+  has read it, before it spawns anything.
+- **Connecting.** The child opens `<endpoint>?token=<credential>` (base64url needs no escaping) with no `Origin`
+  header, exactly like the `ardia` command's browser connection. `/ardia/active` and `/json*` answer it nothing.

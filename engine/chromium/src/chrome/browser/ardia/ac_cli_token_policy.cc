@@ -2,25 +2,108 @@
 
 #include "chrome/browser/ardia/ac_cli_token_policy.h"
 
+#include <array>
+#include <limits>
 #include <map>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
+#include "ardia/core/ac_content_hooks.h"
+#include "ardia/core/ac_host_visibility.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/values.h"
+#include "chrome/browser/ardia/ac_cli_file_picker.h"
 #include "chrome/browser/ardia/ac_cli_owned_tabs.h"
 #include "chrome/browser/ardia/ac_cli_token_policy_internal.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/devtools_agent_host_client.h"
+#include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 
 namespace ardia {
 namespace cli_token_policy_internal {
+
+namespace {
+
+constexpr std::array<std::pair<std::string_view, CommandDomain>, 11>
+    kCountedDomains = {{
+        {"Target", CommandDomain::kTarget},
+        {"Page", CommandDomain::kPage},
+        {"Runtime", CommandDomain::kRuntime},
+        {"DOM", CommandDomain::kDom},
+        {"Input", CommandDomain::kInput},
+        {"Network", CommandDomain::kNetwork},
+        {"Emulation", CommandDomain::kEmulation},
+        {"Browser", CommandDomain::kBrowser},
+        {"Storage", CommandDomain::kStorage},
+        {"Fetch", CommandDomain::kFetch},
+        {"Accessibility", CommandDomain::kAccessibility},
+    }};
+
+constexpr std::array<std::string_view, static_cast<size_t>(CommandDomain::kCount)>
+    kDomainNames = {"target",  "page",      "runtime", "dom",
+                    "input",   "network",   "emulation", "browser",
+                    "storage", "fetch",     "accessibility", "other"};
+
+std::array<int, static_cast<size_t>(CommandDomain::kCount)>& CommandCounts() {
+  static std::array<int, static_cast<size_t>(CommandDomain::kCount)> counts =
+      {};
+  return counts;
+}
+
+bool NeedsResponse(const std::string& method) {
+  return method == "Target.getTargets" || method == "Target.getTargetInfo" ||
+         method == "Target.createTarget";
+}
+
+std::vector<TokenClient*> ClientsOf(const std::string& credential_id) {
+  std::vector<TokenClient*> clients;
+  for (const auto& [root, client] : Registry()) {
+    if (client->scope() && client->scope()->credential_id == credential_id) {
+      clients.push_back(client);
+    }
+  }
+  return clients;
+}
+
+void MarkOffscreen(base::DictValue* info) {
+  if (info && IsOffscreenTarget(info->FindString("targetId"))) {
+    info->Set("ardiaOffscreen", true);
+  }
+}
+
+}
+
+CommandDomain DomainOf(std::string_view method) {
+  const std::string_view domain = method.substr(0, method.find('.'));
+  for (const auto& [name, counted] : kCountedDomains) {
+    if (name == domain) {
+      return counted;
+    }
+  }
+  return CommandDomain::kOther;
+}
+
+void CountCommand(CommandDomain domain) {
+  int& count = CommandCounts()[static_cast<size_t>(domain)];
+  if (count < std::numeric_limits<int>::max()) {
+    ++count;
+  }
+}
+
+bool IsOffscreenTarget(const std::string* target_id) {
+  content::DevToolsAgentHost* host =
+      target_id ? content::ArdiaDevToolsAgentHostForId(*target_id) : nullptr;
+  content::WebContents* contents = host ? host->GetWebContents() : nullptr;
+  return contents && ardiacore::InAutomationWindow(contents);
+}
 
 std::string ErrorReply(int id,
                        const std::string& session,
@@ -46,13 +129,47 @@ std::map<content::DevToolsAgentHostClient*, TokenClient*>& Registry() {
 }
 
 TokenClient::TokenClient(content::DevToolsAgentHostClient* client,
-                         content::DevToolsAgentHost* host)
-    : client_(client), root_host_(host) {
+                         content::DevToolsAgentHost* host,
+                         TokenKind kind,
+                         std::optional<PluginScope> scope)
+    : client_(client),
+      root_host_(host),
+      kind_(kind),
+      scope_(std::move(scope)) {
+  CHECK_EQ(kind_ == TokenKind::kPlugin, scope_.has_value());
   Registry()[client_] = this;
+}
+
+void TokenClient::Revoke() {
+  wedged_ = true;
+  if (closer_) {
+    std::move(closer_).Run();
+  }
+}
+
+void TokenClient::SetCloser(base::OnceClosure close) {
+  closer_ = std::move(close);
+}
+
+bool TokenClient::MayAttachToURL(const GURL& url, bool is_webui) {
+  return kind_ == TokenKind::kCli || (!is_webui && IsWebUrl(url));
+}
+
+bool TokenClient::MayAttachToRenderFrameHost(content::RenderFrameHost* frame) {
+  return kind_ == TokenKind::kCli || PluginMayAttachToFrame(*scope_, frame);
+}
+
+bool TokenClient::MayReadLocalFiles() {
+  return kind_ == TokenKind::kCli;
+}
+
+bool TokenClient::MayWriteLocalFiles() {
+  return kind_ == TokenKind::kCli;
 }
 
 TokenClient::~TokenClient() {
   Registry().erase(client_);
+  ForgetFilePickerAnswers(this);
   ReleaseCliOwnedTargets(this);
 }
 
@@ -74,23 +191,9 @@ bool TokenClient::FilterCommand(std::string& message, std::string* reply) {
                         "ardia: a command needs an id and a method");
     return false;
   }
-  for (auto [key, value] : command) {
-    if (key != "id" && key != "method" && key != "params" &&
-        key != "sessionId") {
-      *reply = ErrorReply(*id, session, kInvalidRequest,
-                          base::StrCat({"ardia: a command can't carry ", key}));
-      return false;
-    }
-  }
   if (session_id && !targets_.contains(session)) {
     *reply = ErrorReply(*id, std::string(), kInvalidRequest,
                         "ardia: no attached session has that sessionId");
-    return false;
-  }
-  if (!AllowedMethods().contains(*method)) {
-    *reply = ErrorReply(*id, session, kMethodNotAllowed,
-                        base::StrCat({"ardia: ", *method,
-                                      " isn't allowed for the ardia command"}));
     return false;
   }
   if (command.Find("params") && !command.FindDict("params")) {
@@ -98,13 +201,28 @@ bool TokenClient::FilterCommand(std::string& message, std::string* reply) {
                         "ardia: params must be an object");
     return false;
   }
-  base::DictValue& params = *command.EnsureDict("params");
-  std::string refusal = Refusal(*method, session, params);
-  if (!refusal.empty()) {
+  if (wedged_) {
     *reply = ErrorReply(*id, session, kRefused,
-                        base::StrCat({"ardia: ", *method, " ", refusal,
-                                      " isn't allowed for the ardia command"}));
+                        "ardia: this connection is closing");
     return false;
+  }
+  if (kind_ == TokenKind::kPlugin) {
+    const base::DictValue empty;
+    const base::DictValue* params = command.FindDict("params");
+    const std::string refusal =
+        PluginRefusal(*scope_, *method, params ? *params : empty,
+                      session.empty());
+    if (!refusal.empty()) {
+      ++PluginTotalsSoFar().refused;
+      *reply = ErrorReply(*id, session, kMethodNotAllowed,
+                          base::StrCat({"ardia: ", *method, " ", refusal,
+                                        " isn't allowed for a plugin"}));
+      return false;
+    }
+  }
+  if (*method == kAnswerFilePicker) {
+    return AnswerFilePickerCommand(*id, session, command.FindDict("params"),
+                                   reply);
   }
   const std::pair<std::string, int> key(session, *id);
   if (outstanding_.contains(key)) {
@@ -120,150 +238,158 @@ bool TokenClient::FilterCommand(std::string& message, std::string* reply) {
     wedged_ = true;
     return false;
   }
-  outstanding_[key] = NeedsResponse(*method, params) ? *method : std::string();
+  NoteCommand(*method, session, command.FindDict("params"));
+  outstanding_[key] = NeedsResponse(*method) ? *method : std::string();
   message = base::WriteJson(command).value_or(std::string());
   return !message.empty();
+}
+
+bool TokenClient::AnswerFilePickerCommand(int id,
+                                          const std::string& session,
+                                          const base::DictValue* params,
+                                          std::string* reply) {
+  CountCommand(CommandDomain::kOther);
+  auto target = targets_.find(session);
+  content::DevToolsAgentHost* host =
+      target == targets_.end()
+          ? nullptr
+          : content::ArdiaDevToolsAgentHostForId(target->second);
+  const base::DictValue empty;
+  const std::string refusal = ArmFilePickerAnswer(
+      host ? host->GetWebContents() : nullptr, params ? *params : empty, this);
+  if (!refusal.empty()) {
+    *reply = ErrorReply(id, session, kInvalidRequest,
+                        base::StrCat({"ardia: ", kAnswerFilePicker, " ",
+                                      refusal, " can't be answered"}));
+    return false;
+  }
+  base::DictValue answer;
+  answer.Set("id", id);
+  if (!session.empty()) {
+    answer.Set("sessionId", session);
+  }
+  answer.Set("result", base::DictValue());
+  *reply = base::WriteJson(answer).value_or("{}");
+  return false;
 }
 
 bool TokenClient::ShouldClose() const {
   return wedged_;
 }
 
-bool TokenClient::MayAttachToURL(const GURL& url, bool is_webui) {
-  return !is_webui && IsWebUrl(url);
+void TokenClient::NoteCommand(const std::string& method,
+                              const std::string& session,
+                              const base::DictValue* params) {
+  CountCommand(DomainOf(method));
+  if (method != "Emulation.setDeviceMetricsOverride") {
+    return;
+  }
+  auto target = targets_.find(session);
+  if (target != targets_.end()) {
+    ClaimCliOwnedTarget(target->second, this);
+  }
 }
 
-bool TokenClient::MayAttachToRenderFrameHost(content::RenderFrameHost* frame) {
-  return IsWebFrame(frame);
-}
-
-std::string TokenClient::Refusal(const std::string& method,
-                                 const std::string& session,
-                                 base::DictValue& params) {
-  for (const char* key : {"contextId", "executionContextId"}) {
-    if (const base::Value* value = params.Find(key)) {
-      if (!value->is_int() || !ContextAllowed(session, value->GetInt())) {
-        return "in that execution context";
-      }
-    }
+bool TokenClient::FilterResponse(const std::string& method,
+                                 std::string& message) {
+  std::optional<base::Value> parsed =
+      base::JSONReader::Read(message, base::JSON_PARSE_RFC);
+  base::DictValue* result =
+      parsed && parsed->is_dict() ? parsed->GetDict().FindDict("result")
+                                  : nullptr;
+  if (!result) {
+    return true;
   }
-  if (const base::Value* value = params.Find("uniqueContextId")) {
-    if (!value->is_string() ||
-        !sessions_[session].unique_ids.contains(value->GetString())) {
-      return "in that execution context";
+  if (method == "Target.createTarget") {
+    if (const std::string* target_id = result->FindString("targetId")) {
+      NoteCliOwnedTarget(*target_id, this);
     }
+    return true;
   }
-  if (method != "Runtime.releaseObject" &&
-      !ObjectIdsAllowed(session, base::Value(params.Clone()))) {
-    return "on that object";
+  if (method == "Target.getTargets") {
+    base::ListValue* infos = result->FindList("targetInfos");
+    if (!infos) {
+      return true;
+    }
+    if (kind_ == TokenKind::kPlugin) {
+      infos->EraseIf([&](const base::Value& info) {
+        return !info.is_dict() ||
+               !PluginMayAttachToTargetId(*scope_,
+                                          info.GetDict().FindString("targetId"));
+      });
+    }
+    for (base::Value& info : *infos) {
+      MarkOffscreen(info.GetIfDict());
+    }
+  } else {
+    MarkOffscreen(result->FindDict("targetInfo"));
   }
-  if (method == "Target.attachToTarget") {
-    if (params.FindBool("flatten") != true) {
-      return "without flatten";
-    }
-    if (!IsWebTarget(params.FindString("targetId"))) {
-      return "to that target";
-    }
-  } else if (method == "Target.setAutoAttach") {
-    if (params.FindBool("autoAttach") != false &&
-        params.FindBool("flatten") != true) {
-      return "without flatten";
-    }
-  } else if (method == "Target.createTarget") {
-    const std::string* url = params.FindString("url");
-    if (!url || !IsWebDestination(*url)) {
-      return "to that URL";
-    }
-    if (params.Find("browserContextId")) {
-      return "in another browser context";
-    }
-  } else if (method == "Target.activateTarget" ||
-             method == "Target.closeTarget") {
-    if (!IsWebTarget(params.FindString("targetId"))) {
-      return "on that target";
-    }
-  } else if (method == "Target.getTargetInfo") {
-    if (params.Find("targetId") &&
-        !IsWebTarget(params.FindString("targetId"))) {
-      return "on that target";
-    }
-  } else if (method == "Page.navigate") {
-    const std::string* url = params.FindString("url");
-    if (!url || url->empty() || !IsWebDestination(*url)) {
-      return "to that URL";
-    }
-  } else if (method == "Page.createIsolatedWorld") {
-    params.Set("grantUniveralAccess", false);
-  } else if (method == "Page.addScriptToEvaluateOnNewDocument") {
-    const base::Value* world = params.Find("worldName");
-    if (world && !(world->is_string() && world->GetString().empty())) {
-      return "in a named world";
-    }
-  } else if (method == "Page.printToPDF") {
-    const std::string* mode = params.FindString("transferMode");
-    if (params.Find("transferMode") && (!mode || *mode != "ReturnAsBase64")) {
-      return "as a stream";
-    }
-  } else if (method == "Emulation.setDeviceMetricsOverride" ||
-             method == "Emulation.clearDeviceMetricsOverride") {
-    auto target = targets_.find(session);
-    if (target == targets_.end()) {
-      return "on a tab the ardia command didn't open";
-    }
-    std::string refusal = CliEmulationRefusal(target->second);
-    if (!refusal.empty()) {
-      return refusal;
-    }
-    if (!MetricsOverrideAllowed(params)) {
-      return "with that option";
-    }
-    if (method == "Emulation.setDeviceMetricsOverride") {
-      ClaimCliOwnedTarget(target->second, this);
-    }
-  } else if (method == "Runtime.evaluate") {
-    if (params.FindBool("includeCommandLineAPI").value_or(false)) {
-      return "with the command line API";
-    }
-  } else if (method == "Input.dispatchMouseEvent") {
-    const std::string* type = params.FindString("type");
-    const std::string* button = params.FindString("button");
-    if (type && (*type == "mousePressed" || *type == "mouseReleased") &&
-        (!button || *button == "none")) {
-      return "without a button";
-    }
-  } else if (method == "Input.dispatchKeyEvent") {
-    if (!EditingCommandsAllowed(params.Find("commands"))) {
-      return "with those editing commands";
-    }
-    params.Remove("nativeVirtualKeyCode");
-    params.Remove("isSystemKey");
+  std::optional<std::string> annotated = base::WriteJson(*parsed);
+  if (annotated) {
+    message = std::move(*annotated);
   }
-  return std::string();
+  return true;
 }
 
 }
 
 std::unique_ptr<ArdiaDevToolsTokenClient> CreateTokenClient(
     content::DevToolsAgentHostClient* client,
-    content::DevToolsAgentHost* host) {
-  return std::make_unique<cli_token_policy_internal::TokenClient>(client, host);
+    content::DevToolsAgentHost* host,
+    TokenKind kind,
+    std::optional<PluginScope> scope) {
+  if ((kind == TokenKind::kPlugin) != scope.has_value() ||
+      (scope && !PluginMayConnectTo(*scope, host))) {
+    return nullptr;
+  }
+  return std::make_unique<cli_token_policy_internal::TokenClient>(
+      client, host, kind, std::move(scope));
+}
+
+std::optional<TokenKind> TokenClientKind(
+    content::DevToolsAgentHostClient* root_client) {
+  auto it = cli_token_policy_internal::Registry().find(root_client);
+  if (it == cli_token_policy_internal::Registry().end()) {
+    return std::nullopt;
+  }
+  return it->second->kind();
+}
+
+bool IsTokenClient(content::DevToolsAgentHostClient* root_client) {
+  return TokenClientKind(root_client).has_value();
 }
 
 bool TokenClientMayAttach(content::DevToolsAgentHostClient* root_client,
                           content::DevToolsAgentHost* host) {
-  return !cli_token_policy_internal::Registry().contains(root_client) ||
-         cli_token_policy_internal::IsWebHost(host) ||
-         cli_token_policy_internal::IsPendingWebFrameHost(host);
+  auto it = cli_token_policy_internal::Registry().find(root_client);
+  if (it == cli_token_policy_internal::Registry().end() ||
+      it->second->kind() == TokenKind::kCli) {
+    return true;
+  }
+  return host == it->second->root_host() ||
+         cli_token_policy_internal::PluginTargetInScope(*it->second->scope(),
+                                                        host);
 }
 
-bool TokenClientMayInput(content::DevToolsAgentHostClient* root_client,
-                         content::RenderFrameHost* frame) {
-  return !IsTokenClient(root_client) ||
-         cli_token_policy_internal::IsWebFrame(frame);
+void CloseTokenClientsOf(const std::string& credential_id) {
+  for (cli_token_policy_internal::TokenClient* client :
+       cli_token_policy_internal::ClientsOf(credential_id)) {
+    client->Revoke();
+  }
 }
 
-bool IsTokenClient(content::DevToolsAgentHostClient* root_client) {
-  return cli_token_policy_internal::Registry().contains(root_client);
+PluginTotals& PluginTotalsSoFar() {
+  static PluginTotals totals;
+  return totals;
+}
+
+base::DictValue TokenCommandsByDomain() {
+  base::DictValue counts;
+  for (size_t i = 0; i < cli_token_policy_internal::kDomainNames.size(); ++i) {
+    counts.Set(cli_token_policy_internal::kDomainNames[i],
+               cli_token_policy_internal::CommandCounts()[i]);
+  }
+  return counts;
 }
 
 }

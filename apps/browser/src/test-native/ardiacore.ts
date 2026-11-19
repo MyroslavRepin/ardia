@@ -355,6 +355,7 @@ const fakeModules = {
       cliOwnsTab: ({ tabId }) => testGlobals.acTestCliOwns?.(tabId) ?? { owned: false, shown: false },
       cliMoveOffscreen: ({ tabId }) => testGlobals.acTestCliMoveOffscreen?.(tabId) ?? { ok: false },
       cliCloseOffscreenTabs: () => null,
+      cliPluginCredential: (args) => ("revoke" in args ? { revoked: false } : { id: "plugin-test", credential: "p.test", window: 1, endpoint: "" }),
       cliTabTargets: ({ tabIds }) => Object.fromEntries(tabIds.map((id) => [id, testGlobals.acTestCliTargets?.(id) ?? { targetId: null, pageGeneration: 0 }])),
     },
     { inputIdleSeconds: () => 3600 },

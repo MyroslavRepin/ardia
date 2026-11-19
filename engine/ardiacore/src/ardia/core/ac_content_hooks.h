@@ -6,11 +6,16 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/functional/callback_forward.h"
 #include "extensions/common/extension_id.h"
 
 class GURL;
+
+namespace base {
+class FilePath;
+}
 
 namespace content {
 class BrowserContext;
@@ -146,10 +151,14 @@ class ArdiaDevToolsTokenClient {
   virtual bool MayAttachToURL(const GURL& url, bool is_webui) = 0;
   virtual bool MayAttachToRenderFrameHost(
       content::RenderFrameHost* render_frame_host) = 0;
+  virtual bool MayReadLocalFiles() = 0;
+  virtual bool MayWriteLocalFiles() = 0;
+  virtual void SetCloser(base::OnceClosure close) = 0;
 };
 
 extern std::unique_ptr<ArdiaDevToolsTokenClient> (*g_ardia_devtools_token_client)(
     const content::DevToolsSocketFactory* factory,
+    std::string_view token,
     content::DevToolsAgentHostClient* client,
     content::DevToolsAgentHost* host);
 
@@ -167,5 +176,12 @@ extern void (*g_ardia_devtools_session_attached)(
     const void* session);
 
 extern void (*g_ardia_devtools_session_detached)(const void* session);
+
+extern bool (*g_ardia_file_picker_answer)(content::RenderFrameHost* frame,
+                                          int dialog_type,
+                                          std::vector<base::FilePath>* paths);
+
+extern bool (*g_ardia_file_access_prompt_answer)(content::WebContents* contents,
+                                                 const base::FilePath& path);
 
 #endif

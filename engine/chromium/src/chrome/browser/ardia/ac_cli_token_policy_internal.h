@@ -6,11 +6,11 @@
 #include <cstddef>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/values.h"
@@ -32,20 +32,41 @@ inline constexpr int kInvalidRequest = -32600;
 inline constexpr int kParseError = -32700;
 inline constexpr int kRefused = -32000;
 inline constexpr size_t kMaxPending = 4096;
+inline constexpr char kAnswerFilePicker[] = "Ardia.answerFilePicker";
 
-const std::set<std::string_view>& AllowedMethods();
-bool NeedsResponse(const std::string& method, const base::DictValue& params);
-bool EditingCommandsAllowed(const base::Value* commands);
+enum class CommandDomain {
+  kTarget,
+  kPage,
+  kRuntime,
+  kDom,
+  kInput,
+  kNetwork,
+  kEmulation,
+  kBrowser,
+  kStorage,
+  kFetch,
+  kAccessibility,
+  kOther,
+  kCount,
+};
+
+CommandDomain DomainOf(std::string_view method);
+void CountCommand(CommandDomain domain);
+
+bool IsOffscreenTarget(const std::string* target_id);
 
 bool IsWebUrl(const GURL& url);
 bool IsWebDestination(std::string_view spec);
-bool IsWebFrame(content::RenderFrameHost* frame);
-bool IsPendingWebFrameHost(content::DevToolsAgentHost* host);
-bool IsWebHost(content::DevToolsAgentHost* host);
-bool IsWebTarget(const std::string* target_id);
-bool IsOffscreenTarget(const std::string* target_id);
-
-bool MetricsOverrideAllowed(const base::DictValue& params);
+bool PluginTargetInScope(const PluginScope& scope,
+                         content::DevToolsAgentHost* host);
+bool PluginMayAttachToFrame(const PluginScope& scope,
+                            content::RenderFrameHost* frame);
+bool PluginMayAttachToTargetId(const PluginScope& scope,
+                               const std::string* target_id);
+std::string PluginRefusal(const PluginScope& scope,
+                          const std::string& method,
+                          const base::DictValue& params,
+                          bool on_root_session);
 
 std::string ErrorReply(int id,
                        const std::string& session,
@@ -59,45 +80,45 @@ std::map<content::DevToolsAgentHostClient*, TokenClient*>& Registry();
 class TokenClient : public ArdiaDevToolsTokenClient {
  public:
   TokenClient(content::DevToolsAgentHostClient* client,
-              content::DevToolsAgentHost* host);
+              content::DevToolsAgentHost* host,
+              TokenKind kind,
+              std::optional<PluginScope> scope);
   ~TokenClient() override;
+
+  TokenKind kind() const { return kind_; }
+  const std::optional<PluginScope>& scope() const { return scope_; }
+  content::DevToolsAgentHost* root_host() const { return root_host_.get(); }
+  void Revoke();
 
   bool FilterCommand(std::string& message, std::string* reply) override;
   bool FilterEvent(std::string& message) override;
   bool ShouldClose() const override;
   bool MayAttachToURL(const GURL& url, bool is_webui) override;
   bool MayAttachToRenderFrameHost(content::RenderFrameHost* frame) override;
+  bool MayReadLocalFiles() override;
+  bool MayWriteLocalFiles() override;
+  void SetCloser(base::OnceClosure close) override;
 
  private:
-  struct Contexts {
-    std::map<int, int> ids;
-    std::set<std::string> unique_ids;
-  };
-
+  bool AnswerFilePickerCommand(int id,
+                               const std::string& session,
+                               const base::DictValue* params,
+                               std::string* reply);
   void ForgetSession(const std::string& session);
   void ForgetSessionOf(const std::string& message);
-  content::DevToolsAgentHost* HostOf(const std::string& session);
-  int CurrentProcess(const std::string& session);
-  void AllowContext(const std::string& session, int context);
-  bool ContextAllowed(const std::string& session, std::optional<int> context);
-  bool ObjectAllowed(const std::string& session, const std::string& object_id);
-  bool ObjectIdsAllowed(const std::string& session, const base::Value& value);
-  std::string Refusal(const std::string& method,
-                      const std::string& session,
-                      base::DictValue& params);
-  void LearnDefaultContext(const std::string& session,
-                           const base::DictValue* remote_object);
-  bool FilterResponse(int id, const std::string& method, std::string& message);
-  bool FilterNetworkEvent(std::string_view method, std::string& message);
-  bool FilterRuntimeEvent(std::string_view method, std::string& message);
+  void NoteCommand(const std::string& method,
+                   const std::string& session,
+                   const base::DictValue* params);
+  bool FilterResponse(const std::string& method, std::string& message);
   bool FilterTargetEvent(std::string_view method, const std::string& message);
-  bool FilterPageEvent(const std::string& message);
 
   const raw_ptr<content::DevToolsAgentHostClient> client_;
   const scoped_refptr<content::DevToolsAgentHost> root_host_;
+  const TokenKind kind_;
+  const std::optional<PluginScope> scope_;
   std::map<std::string, std::string> targets_;
-  std::map<std::string, Contexts> sessions_;
   std::map<std::pair<std::string, int>, std::string> outstanding_;
+  base::OnceClosure closer_;
   bool wedged_ = false;
 };
 

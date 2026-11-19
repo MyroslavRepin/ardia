@@ -18,4 +18,6 @@ export const cliTabTargets = (tabIds: string[]) => call("engine.cliTabTargets", 
 export const cliOwnsTab = (tabId: string) => call("engine.cliOwnsTab", { tabId });
 export const cliMoveOffscreen = (tabId: string) => call("engine.cliMoveOffscreen", { tabId });
 export const cliCloseOffscreenTabs = () => call("engine.cliCloseOffscreenTabs");
+export const mintCliPluginCredential = (tabId: string) => call("engine.cliPluginCredential", { tabId });
+export const revokeCliPluginCredential = (id: string) => call("engine.cliPluginCredential", { revoke: id });
 export const onCliControlChanged = (listener: (status: CliControlStatus) => void) => on("engine.cliControl", listener);

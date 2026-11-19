@@ -10,7 +10,7 @@ import type { HistoryChangedBatch, HistoryWireRow } from "../history";
 import type { FaviconImage } from "../favicons";
 import type { Download, DownloadSettings } from "../downloads";
 import type {
-  BatterySaverMode, BatterySaverState, CliControlStatus, CursorRestore, CliTabTarget, EngineComponent, EngineInfo, EngineTask, HoverLostEpisode, MemorySaverRequest, PressLoopLongReport, MemorySaverState, PopupProtectedMedia, SystemState, WindowUnpaintedRecord,
+  BatterySaverMode, BatterySaverState, CliControlStatus, CliPluginCredential, CursorRestore, CliTabTarget, EngineComponent, EngineInfo, EngineTask, HoverLostEpisode, MemorySaverRequest, PressLoopLongReport, MemorySaverState, PopupProtectedMedia, SystemState, WindowUnpaintedRecord,
 } from "../engineDomain";
 import type { ExternalAppAllowance, PermissionRequest, PermissionResult } from "../permissions";
 import type { BrowsingDataType } from "../profiles";
@@ -45,6 +45,7 @@ export type EngineCalls = {
   "engine.cliOwnsTab": [{ tabId: string }, { owned: boolean; shown: boolean }];
   "engine.cliMoveOffscreen": [{ tabId: string }, { ok: boolean; reason?: string }];
   "engine.cliCloseOffscreenTabs": [{}, Done];
+  "engine.cliPluginCredential": [{ tabId: string } | { revoke: string }, CliPluginCredential];
 
   "tabs.routeLinkTabs": [{ urls: string[] }, LinkRoute];
   "tabs.stripCommand": [{ id: number; command: TabStripCommand }, null];

@@ -1,0 +1,81 @@
+diff --git a/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc b/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc
+--- a/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc
++++ b/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc
+@@ -4,6 +4,12 @@
+ 
+ #include "chrome/browser/file_system_access/file_system_access_permission_request_manager.h"
+ 
++#include "ardia/core/ac_content_hooks.h"  // nogncheck
++
++bool (*g_ardia_file_access_prompt_answer)(content::WebContents* contents,
++                                         const base::FilePath& path) =
++    nullptr;
++
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "chrome/browser/ui/file_system_access/file_system_access_dialogs.h"
+@@ -195,6 +201,16 @@ void FileSystemAccessPermissionRequestManager::DequeueAndShowRequest() {
+     return;
+   }
+ 
++  if (g_ardia_file_access_prompt_answer &&
++      current_request_->data.request_type == RequestType::kNewPermission &&
++      current_request_->data.file_request_data.size() == 1 &&
++      g_ardia_file_access_prompt_answer(
++          web_contents(),
++          current_request_->data.file_request_data.front().path_info.path)) {
++    OnPermissionDialogResult(permissions::PermissionAction::GRANTED);
++    return;
++  }
++
+   switch (current_request_->data.request_type) {
+     case RequestType::kNewPermission:
+       ShowFileSystemAccessPermissionDialog(
+diff --git a/content/browser/file_system_access/file_system_chooser.cc b/content/browser/file_system_access/file_system_chooser.cc
+--- a/content/browser/file_system_access/file_system_chooser.cc
++++ b/content/browser/file_system_access/file_system_chooser.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "content/browser/file_system_access/file_system_chooser.h"
+ 
++#include "ardia/core/ac_content_hooks.h"  // nogncheck
++
+ #include <memory>
+ #include <utility>
+ #include <vector>
+@@ -39,6 +41,11 @@
+ #include <set>
+ #endif
+ 
++bool (*g_ardia_file_picker_answer)(content::RenderFrameHost* frame,
++                                   int dialog_type,
++                                   std::vector<base::FilePath>* paths) =
++    nullptr;
++
+ namespace content {
+ 
+ namespace {
+@@ -381,6 +388,23 @@ void FileSystemChooser::CreateAndShow(
+     FileSystemChooser::ScopedObjects scoped_objects) {
+   CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
+   TRACE_EVENT0("FileSystem", "FileSystemChooser::CreateAndShow");
++  std::vector<base::FilePath> ardia_paths;
++  if (g_ardia_file_picker_answer &&
++      g_ardia_file_picker_answer(render_frame_host,
++                                 static_cast<int>(options.type()),
++                                 &ardia_paths)) {
++    if (ardia_paths.empty()) {
++      AbortedCallback(std::move(callback));
++      return;
++    }
++    std::vector<PathInfo> ardia_result;
++    for (const base::FilePath& path : ardia_paths) {
++      ardia_result.push_back(FileInfoToPathInfo(ui::SelectedFileInfo(path)));
++    }
++    std::move(callback).Run(file_system_access_error::Ok(),
++                            std::move(ardia_result));
++    return;
++  }
+   WebContents* web_contents =
+       WebContents::FromRenderFrameHost(render_frame_host);
+   VLOG(1) << "Requested chooser with visibility: "
