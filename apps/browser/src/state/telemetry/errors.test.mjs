@@ -54,6 +54,23 @@ test("a cause's message is scrubbed exactly as the error's own message is", () =
   assert.equal(asCause.includes("mail.example.com") || asCause.includes("someone@example.com"), false);
 });
 
+test("only error objects are followed as causes, a cause that throws ends the chain, and chains that only join the same are different reports", () => {
+  const before = queued().length;
+  captureException(new Error("wrapper of text", { cause: "Unreleased acquisition plan" }), "onerror");
+  const throwing = new Error("wrapper of a broken cause", { cause: Object.defineProperty(new Error("x"), "message", { get() { throw new Error("getter"); } }) });
+  captureException(throwing, "onerror");
+  const deep = new Error("d0", { cause: new Error("d1", { cause: new Error("d2", { cause: Object.defineProperty(new Error("d3"), "cause", { get() { throw new Error("getter"); } }) }) }) });
+  captureException(deep, "onerror");
+  captureException(new Error("same", { cause: new Error("one|TypeError|two") }), "onerror");
+  captureException(new Error("same", { cause: new Error("one", { cause: new TypeError("two") }) }), "onerror");
+  const events = queued().slice(before);
+  assert.equal(events.length, 5);
+  assert.deepEqual(events[0].properties.$exception_values, ["wrapper of text"]);
+  assert.deepEqual(events[1].properties.$exception_values, ["wrapper of a broken cause"]);
+  assert.deepEqual(events[2].properties.$exception_values, ["d0", "d1", "d2", "d3"]);
+  assert.equal(events[4].properties.$exception_types.length, 3);
+});
+
 test("a native crash names its exception and the app's images at the top level, never its reason", async () => {
   stub.shellNativeModules.ArdiaApp.crashReports = async () => [
     {

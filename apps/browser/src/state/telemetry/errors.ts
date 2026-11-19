@@ -28,16 +28,31 @@ function exceptionProperties(entries: ExceptionEntry[], mechanism: Mechanism, ha
 
 const MAX_CAUSES = 3;
 
+function entryOf(error: unknown): ExceptionEntry {
+  const type = errorType(error);
+  return { type, value: errorMessage(error) || type, frames: parseStack(error && typeof error === "object" ? (error as { stack?: unknown }).stack : undefined) };
+}
+
+function causeOf(error: unknown): object | null {
+  try {
+    const cause = error && typeof error === "object" ? (error as { cause?: unknown }).cause : undefined;
+    return cause && typeof cause === "object" ? cause : null;
+  } catch {
+    return null;
+  }
+}
+
 function causeChain(error: unknown): ExceptionEntry[] {
-  const entries: ExceptionEntry[] = [];
-  const visited = new Set<unknown>();
-  let current = error;
-  do {
-    visited.add(current);
-    const type = errorType(current);
-    entries.push({ type, value: errorMessage(current) || type, frames: parseStack(current && typeof current === "object" ? (current as { stack?: unknown }).stack : undefined) });
-    current = current && typeof current === "object" ? (current as { cause?: unknown }).cause : undefined;
-  } while (current != null && !visited.has(current) && entries.length <= MAX_CAUSES);
+  const entries = [entryOf(error)];
+  const visited = new Set<unknown>([error]);
+  for (let cause = causeOf(error); cause && !visited.has(cause) && entries.length <= MAX_CAUSES; cause = causeOf(cause)) {
+    visited.add(cause);
+    try {
+      entries.push(entryOf(cause));
+    } catch {
+      break;
+    }
+  }
   return entries;
 }
 
@@ -50,8 +65,7 @@ export function captureException(error: unknown, mechanism: Mechanism, { fatal =
     const entries = causeChain(error);
     const { type, value, frames } = entries[0]!;
     const code = errorCode(error);
-    const causes = entries.slice(1).map((e) => `${e.type}|${e.value}`).join("|");
-    const key = `${type}|${value}|${code ?? ""}|${frames.at(-1)?.function ?? ""}|${causes}`;
+    const key = JSON.stringify([type, value, code ?? "", frames.at(-1)?.function ?? "", entries.slice(1).map((e) => [e.type, e.value])]);
     if (seen.has(key) || seen.size >= MAX_PER_SESSION) return;
     seen.add(key);
     capture(

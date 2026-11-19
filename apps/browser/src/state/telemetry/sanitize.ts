@@ -164,7 +164,9 @@ const LOCATION = /^(.*?)(?::(\d+))?(?::(\d+))?$/;
 export function parseStack(stack: unknown, limit = 50): ExceptionFrame[] {
   if (typeof stack !== "string") return [];
   const frames: ExceptionFrame[] = [];
-  for (const line of stack.split("\n")) {
+  const lines = stack.split("\n");
+  const v8Style = lines.some((line) => V8_FRAME.test(line));
+  for (const line of lines) {
     let fn: string | undefined;
     let location: string | undefined;
     const v8 = V8_FRAME.exec(line);
@@ -172,7 +174,7 @@ export function parseStack(stack: unknown, limit = 50): ExceptionFrame[] {
       if (v8[2] !== undefined) [fn, location] = [v8[1], v8[2]];
       else location = v8[3];
     } else {
-      const jsc = JSC_FRAME.exec(line);
+      const jsc = v8Style ? null : JSC_FRAME.exec(line);
       if (!jsc || !jsc[2]) continue;
       [fn, location] = [jsc[1], jsc[2]];
     }
