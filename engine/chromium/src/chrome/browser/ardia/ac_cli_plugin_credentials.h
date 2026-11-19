@@ -16,8 +16,10 @@ struct MintedPluginCredential {
   std::string secret;
 };
 
-MintedPluginCredential MintPluginCredential(PluginScope scope);
+std::optional<MintedPluginCredential> MintPluginCredential(PluginScope scope);
 bool RevokePluginCredential(const std::string& id);
+bool PluginCredentialLive(const std::string& id);
+void ClearPluginCredentials();
 std::optional<PluginScope> PluginScopeForSecret(std::string_view secret);
 std::string TokenServerEndpoint();
 

@@ -12,7 +12,10 @@ DevTools port): the ardia command's token (kind cli) gets every method and targe
 a chrome:// page and the browser target; a plugin credential minted for window 1 (engine.cliPluginCredential, kind
 plugin) sees and attaches only window 1's web pages, is refused a chrome:// attach, Browser.setDownloadBehavior,
 DOM.setFileInputFiles, cookies, Target.createTarget and window 2's page, isn't written to ArdiaControl.json and can't
-read /ardia/active; revoking it closes its socket and a new connection with it is refused. The CLI answers a page's
+read /ardia/active; revoking it closes its socket and a new connection with it is refused. A plugin gets exactly its
+allowlist (one allowed and one refused method per domain), Runtime only in its own isolated world (main world refused,
+no universal access), no Network method and no Network, console or main-world context event; when its tab moves to
+another window, a command in flight answers tab_out_of_scope and the session is detached. The CLI answers a page's
 showOpenFilePicker, showSaveFilePicker and showDirectoryPicker with Ardia.answerFilePicker (no dialog opens), and a
 plugin is refused that command. The app's file eval runs
 through its perf probe, so a release build works.`;
@@ -47,7 +50,7 @@ const origin = `http://127.0.0.1:${server.address().port}`;
 writeFileSync(join(data, "session.json"), JSON.stringify(session({
   settings: { cliControl: true },
   windows: [{ id: "w1" }, { id: "w2" }],
-  tabs: [{ id: "t1", windowId: "w1", url: `${origin}/one` }, { id: "t2", windowId: "w2", url: `${origin}/two` }],
+  tabs: [{ id: "t1", windowId: "w1", url: `${origin}/one` }, { id: "t3", windowId: "w1", url: `${origin}/three` }, { id: "t2", windowId: "w2", url: `${origin}/two` }],
 })));
 writeFileSync(join(data, "onboarding.json"), JSON.stringify({ version: 1, completedAt: 1 }));
 writeFileSync(join(data, "perf-probe"), "");
@@ -71,6 +74,7 @@ const appEval = async (body) => {
   return until(`eval ${id}`, async () => {
     const out = JSON.parse(readFileSync(join(data, "dev-eval-result.json"), "utf8"));
     if (out.id !== id) return null;
+    writeFileSync(join(data, "dev-eval-result.json"), JSON.stringify({ id }));
     if (out.error) throw new Error(out.error);
     return { value: out.result };
   }).then((r) => r.value);
@@ -85,6 +89,11 @@ function connect(url) {
     ws.onopen = () => resolve({
       ws, events,
       closed: new Promise((r) => ws.addEventListener("close", r)),
+      raw: (id, method, params = {}, sessionId) => new Promise((done) => {
+        waiting.set(id, done);
+        ws.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }));
+        setTimeout(() => waiting.delete(id) && done({ error: { message: "timed out" } }), 15000);
+      }),
       send: (method, params = {}, sessionId) => new Promise((done) => {
         const id = next++;
         waiting.set(id, done);
@@ -136,28 +145,84 @@ try {
 
   const plugin = await connect(`${base}?token=${encodeURIComponent(minted.credential)}`);
   const seen = (await urlsOf(plugin)).map((t) => t.url);
-  check("plugin: Target.getTargets shows window 1's page only", seen.includes(`${origin}/one`) && seen.every((u) => u === `${origin}/one`), seen.join(" "));
+  check("plugin: Target.getTargets is filtered to window 1's web pages", seen.includes(`${origin}/one`) && !seen.includes(`${origin}/two`) && seen.every((u) => u.startsWith(origin)), seen.join(" "));
   const own = await plugin.send("Target.attachToTarget", { targetId: pages.one.targetId, flatten: true });
-  const ran = own.result && (await plugin.send("Runtime.evaluate", { expression: "document.title", returnByValue: true }, own.result.sessionId));
-  check("plugin: window 1's page attaches and runs script", ran?.result?.result?.value === "one", text(ran ?? own));
+  const ps = own.result?.sessionId;
+  check("plugin: window 1's page attaches", !!ps, text(own));
   const other = await plugin.send("Target.attachToTarget", { targetId: pages.two.targetId, flatten: true });
   check("plugin: window 2's page is refused", refused(other), text(other));
   const chromeAttach = await plugin.send("Target.attachToTarget", { targetId: chrome.result.targetId, flatten: true });
   check("plugin: a chrome:// attach is refused", refused(chromeAttach), text(chromeAttach));
-  for (const [method, params, sessionId] of [
-    ["Browser.setDownloadBehavior", { behavior: "allow", downloadPath: join(work, "dl") }],
+
+  await plugin.send("Runtime.enable", {}, ps);
+  await plugin.send("Page.enable", {}, ps);
+  const frameId = (await plugin.send("Page.getFrameTree", {}, ps)).result?.frameTree?.frame?.id;
+  const world = await plugin.send("Page.createIsolatedWorld", { frameId, worldName: "ardia-plugin", grantUniveralAccess: true }, ps);
+  const isolated = world.result?.executionContextId;
+  check("plugin: Page.createIsolatedWorld answers with its context", Number.isInteger(isolated), text(world));
+  const inWorld = await plugin.send("Runtime.evaluate", { expression: "document.title", contextId: isolated, returnByValue: true }, ps);
+  check("plugin: Runtime.evaluate in its isolated world reads the page", inWorld.result?.result?.value === "one", text(inWorld));
+  const mainWorld = await plugin.send("Runtime.evaluate", { expression: "document.title", returnByValue: true }, ps);
+  check("plugin: Runtime.evaluate in the main world is refused", refused(mainWorld) && /main world/.test(mainWorld.error?.message ?? ""), text(mainWorld));
+  const otherContext = await plugin.send("Runtime.evaluate", { expression: "1", contextId: isolated + 1000 }, ps);
+  check("plugin: a context it didn't create is refused", refused(otherContext), text(otherContext));
+  const crossOrigin = `http://localhost:${server.address().port}/two`;
+  const universal = await plugin.send("Runtime.evaluate", { expression: `fetch(${JSON.stringify(crossOrigin)}).then(() => "fetched", () => "blocked")`, contextId: isolated, awaitPromise: true, returnByValue: true }, ps);
+  check("plugin: its isolated world has no universal access (a cross-origin fetch stays blocked)", universal.result?.result?.value === "blocked", text(universal));
+
+  const allowed = [
+    ["DOM.getDocument", {}],
+    ["Accessibility.getFullAXTree", {}],
+    ["Page.getLayoutMetrics", {}],
+    ["Input.dispatchMouseEvent", { type: "mouseMoved", x: 5, y: 5 }],
+    ["Emulation.setFocusEmulationEnabled", { enabled: true }],
+    ["Target.getTargetInfo", { targetId: pages.one.targetId }],
+  ];
+  for (const [method, params] of allowed) {
+    const reply = await plugin.send(method, params, method.startsWith("Target.") ? undefined : ps);
+    check(`plugin: ${method} answers`, !refused(reply), text(reply));
+  }
+  const refusedHere = [
+    ["DOM.setFileInputFiles", { files: [join(work, "x")], backendNodeId: 1 }, ps],
+    ["Accessibility.queryAXTree", { backendNodeId: 1 }, ps],
+    ["Page.printToPDF", {}, ps],
+    ["Page.addScriptToEvaluateOnNewDocument", { source: "1" }, ps],
+    ["Page.startScreencast", {}, ps],
+    ["Page.setDownloadBehavior", { behavior: "allow", downloadPath: join(work, "dl") }, ps],
+    ["Input.dispatchDragEvent", { type: "dragEnter", x: 1, y: 1, data: { items: [], dragOperationsMask: 1 } }, ps],
+    ["Emulation.setDeviceMetricsOverride", { width: 1, height: 1, deviceScaleFactor: 1, mobile: false }, ps],
     ["Target.createTarget", { url: `${origin}/three` }],
+    ["Target.setDiscoverTargets", { discover: true }],
+    ["Target.activateTarget", { targetId: pages.one.targetId }],
+    ["Target.closeTarget", { targetId: pages.one.targetId }],
     ["Target.attachToBrowserTarget", {}],
-    ["Network.getCookies", {}, own.result?.sessionId],
+    ["Target.setAutoAttach", { autoAttach: true, waitForDebuggerOnStart: false, flatten: true }],
+    ["Network.enable", {}, ps],
+    ["Network.getCookies", {}, ps],
+    ["Network.enableDeviceBoundSessions", { enable: true }, ps],
+    ["Network.deleteDeviceBoundSession", { key: { site: origin, id: "x" } }, ps],
+    ["Fetch.enable", {}, ps],
     ["Storage.getCookies", {}],
-    ["DOM.setFileInputFiles", { files: [join(work, "x")], backendNodeId: 1 }, own.result?.sessionId],
-    ["Page.navigate", { url: "chrome://settings" }, own.result?.sessionId],
-  ]) {
+    ["IO.read", { handle: "1" }],
+    ["Tracing.start", {}],
+    ["Browser.setDownloadBehavior", { behavior: "allow", downloadPath: join(work, "dl") }],
+    ["Overlay.highlightNode", { highlightConfig: {}, backendNodeId: 1 }, ps],
+    ["Ardia.answerFilePicker", { kind: "open", paths: ["/etc/hosts"] }, ps],
+  ];
+  for (const [method, params, sessionId] of refusedHere) {
     const reply = await plugin.send(method, params, sessionId);
     check(`plugin: ${method} is refused`, refused(reply) && /plugin/.test(reply.error?.message ?? ""), text(reply));
   }
-  const pickerAnswer = await plugin.send("Ardia.answerFilePicker", { kind: "open", paths: ["/etc/hosts"] }, own.result?.sessionId);
-  check("plugin: Ardia.answerFilePicker is refused", refused(pickerAnswer) && /plugin/.test(pickerAnswer.error?.message ?? ""), text(pickerAnswer));
+
+  await cli.send("Runtime.evaluate", { expression: "console.log('main world'); location.reload()" }, cliTwo.result?.sessionId);
+  const csOne = (await cli.send("Target.attachToTarget", { targetId: pages.one.targetId, flatten: true })).result?.sessionId;
+  await cli.send("Network.enable", {}, csOne);
+  await cli.send("Runtime.evaluate", { expression: "console.log('main world'); fetch(location.href)" }, csOne);
+  await sleep(1500);
+  const leaked = plugin.events.filter((e) => e.method?.startsWith("Network.") || e.method === "Runtime.consoleAPICalled");
+  check("plugin: no Network or console event reaches it", leaked.length === 0, leaked.map((e) => e.method).join(" "));
+  const mainContexts = plugin.events.filter((e) => e.method === "Runtime.executionContextCreated" && e.params?.context?.id !== isolated);
+  check("plugin: no main-world execution context is announced to it", mainContexts.length === 0, mainContexts.map((e) => e.params?.context?.name).join(" "));
 
   const folder = join(work, "picked");
   mkdirSync(folder);
@@ -186,9 +251,34 @@ try {
   const unanswered = await click("open").then((v) => v, () => null);
   check("cli: an answer of another kind leaves the picker alone", !refused(wrongKind) && unanswered !== "open:x.txt", String(unanswered));
 
+  await arm("open", [join(folder, "a.txt")]);
+  await cli.send("Page.reload", {}, cs);
+  await until("page one reloaded", async () => (await cli.send("Runtime.evaluate", { expression: "document.readyState === 'complete' && !!document.getElementById('open')", returnByValue: true }, cs)).result?.result?.value);
+  const afterNavigation = await click("open").then((v) => v, () => null);
+  check("cli: an answer armed before a navigation isn't used by the new document", afterNavigation !== "open:a.txt:from the ardia command", String(afterNavigation));
+  const slow = cli.raw(424242, "Runtime.evaluate", { expression: "new Promise((r) => setTimeout(() => r(1), 1500))", awaitPromise: true }, cs);
+  const duplicate = await cli.raw(424242, "Ardia.answerFilePicker", { kind: "open", paths: [join(folder, "a.txt")] }, cs);
+  check("cli: Ardia.answerFilePicker with a pending command's id is refused", /still waiting/.test(duplicate.error?.message ?? ""), text(duplicate));
+  await slow;
+
+  const frameAgain = (await plugin.send("Page.getFrameTree", {}, ps)).result?.frameTree?.frame?.id;
+  const worldAgain = (await plugin.send("Page.createIsolatedWorld", { frameId: frameAgain, worldName: "ardia-plugin" }, ps)).result?.executionContextId;
+  const inFlight = plugin.send("Runtime.evaluate", { expression: "new Promise(() => {})", contextId: worldAgain, awaitPromise: true }, ps);
+  await appEval(`ac.actions.moveTabToWindow("t1", "w2"); return true`);
+  const cut = await Promise.race([inFlight, sleep(8000).then(() => ({ error: { message: "no answer" } }))]);
+  check("plugin: a command in flight when its tab leaves the window answers tab_out_of_scope", (cut.error?.message ?? "").startsWith("ardia: tab_out_of_scope"), text(cut));
+  const detached = await until("the detach event", async () => plugin.events.find((e) => e.method === "Target.detachedFromTarget" && e.params?.sessionId === ps) ?? null, 8000).catch(() => null);
+  check("plugin: its session on the moved tab is detached with Target.detachedFromTarget", !!detached);
+  const afterMove = await plugin.send("DOM.getDocument", {}, ps);
+  check("plugin: the moved tab's session takes no more commands", refused(afterMove), text(afterMove));
+  const seenAfterMove = (await urlsOf(plugin)).map((t) => t.url);
+  check("plugin: Target.getTargets no longer lists the moved tab", !seenAfterMove.includes(`${origin}/one`), seenAfterMove.join(" "));
+
   const cliCookies = await cli.send("Network.getCookies", {}, cliTwo.result?.sessionId);
   check("cli: still gets everything after a plugin connected (Network.getCookies)", !refused(cliCookies), text(cliCookies));
 
+  const pluginAlive = await plugin.send("Target.getTargets");
+  check("plugin: its browser connection stays open after the detach", !refused(pluginAlive), text(pluginAlive));
   const revoked = await appEval(`return ac.engine.call("engine.cliPluginCredential", { revoke: ${JSON.stringify(minted.id)} })`);
   const closedInTime = await Promise.race([plugin.closed.then(() => true), sleep(5000).then(() => false)]);
   check("revoking the credential closes its connection", revoked?.revoked === true && closedInTime, JSON.stringify(revoked));

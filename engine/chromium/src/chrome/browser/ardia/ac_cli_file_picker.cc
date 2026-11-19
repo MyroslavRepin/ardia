@@ -2,59 +2,153 @@
 
 #include "chrome/browser/ardia/ac_cli_file_picker.h"
 
+#include <algorithm>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "ardia/core/ac_content_hooks.h"
+#include "base/functional/bind.h"
+#include "base/location.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/time/time.h"
+#include "content/public/browser/global_routing_id.h"
+#include "content/public/browser/page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "ui/shell_dialogs/select_file_dialog.h"
+#include "url/origin.h"
 
 namespace ardia {
 namespace {
 
 constexpr base::TimeDelta kAnswerLifetime = base::Seconds(60);
-constexpr base::TimeDelta kPromptLifetime = base::Seconds(30);
-
-struct Answer {
-  base::WeakPtr<content::WebContents> contents;
-  FilePickerKind kind = FilePickerKind::kOpen;
-  std::vector<base::FilePath> paths;
-  const void* owner = nullptr;
-  base::TimeTicks expires;
-};
-
-struct PromptGrant {
-  base::WeakPtr<content::WebContents> contents;
-  base::FilePath path;
-  base::TimeTicks expires;
-};
+constexpr base::TimeDelta kGrantLifetime = base::Seconds(10);
 
 struct Totals {
   int armed = 0;
   int used = 0;
 };
 
-std::map<const content::WebContents*, Answer>& Answers() {
-  static base::NoDestructor<std::map<const content::WebContents*, Answer>>
+Totals& TotalsSoFar() {
+  static Totals totals;
+  return totals;
+}
+
+void DropAnswer(const content::WebContents* contents);
+
+class ArmedAnswer : public content::WebContentsObserver {
+ public:
+  ArmedAnswer(content::WebContents* contents,
+              FilePickerKind kind,
+              std::vector<base::FilePath> paths,
+              bool write,
+              const void* owner)
+      : content::WebContentsObserver(contents),
+        kind_(kind),
+        paths_(std::move(paths)),
+        write_(write),
+        owner_(owner),
+        expires_(base::TimeTicks::Now() + kAnswerLifetime),
+        document_(contents->GetPrimaryMainFrame()->GetWeakDocumentPtr()) {}
+
+  FilePickerKind kind() const { return kind_; }
+  std::vector<base::FilePath> TakePaths() { return std::move(paths_); }
+  bool write() const { return write_; }
+  const void* owner() const { return owner_; }
+  bool Expired() const { return base::TimeTicks::Now() > expires_; }
+  bool ForDocumentOf(content::RenderFrameHost* frame) const {
+    content::RenderFrameHost* main = frame->GetOutermostMainFrame();
+    return main && document_.AsRenderFrameHostIfValid() == main;
+  }
+
+  void PrimaryPageChanged(content::Page& page) override {
+    DropAnswer(web_contents());
+  }
+  void WebContentsDestroyed() override { DropAnswer(web_contents()); }
+
+ private:
+  const FilePickerKind kind_;
+  std::vector<base::FilePath> paths_;
+  const bool write_;
+  const void* const owner_;
+  const base::TimeTicks expires_;
+  const content::WeakDocumentPtr document_;
+};
+
+struct GrantCandidate {
+  content::GlobalRenderFrameHostId frame;
+  url::Origin origin;
+  base::FilePath path;
+  bool write = false;
+  const void* owner = nullptr;
+  base::TimeTicks expires;
+};
+
+struct PromptGrant {
+  base::WeakPtr<content::WebContents> contents;
+  url::Origin origin;
+  base::FilePath path;
+  bool write = false;
+  const void* owner = nullptr;
+  base::TimeTicks expires;
+};
+
+std::map<const content::WebContents*, std::unique_ptr<ArmedAnswer>>& Answers() {
+  static base::NoDestructor<
+      std::map<const content::WebContents*, std::unique_ptr<ArmedAnswer>>>
       answers;
   return *answers;
 }
 
-std::vector<PromptGrant>& PromptGrants() {
+std::vector<GrantCandidate>& Candidates() {
+  static base::NoDestructor<std::vector<GrantCandidate>> candidates;
+  return *candidates;
+}
+
+std::vector<PromptGrant>& Grants() {
   static base::NoDestructor<std::vector<PromptGrant>> grants;
   return *grants;
 }
 
-Totals& TotalsSoFar() {
-  static Totals totals;
-  return totals;
+void DropAnswer(const content::WebContents* contents) {
+  auto it = Answers().find(contents);
+  if (it == Answers().end()) {
+    return;
+  }
+  base::SequencedTaskRunner::GetCurrentDefault()->DeleteSoon(
+      FROM_HERE, std::move(it->second));
+  Answers().erase(it);
+}
+
+void SweepExpired() {
+  std::vector<const content::WebContents*> expired;
+  for (const auto& [contents, answer] : Answers()) {
+    if (answer->Expired()) {
+      expired.push_back(contents);
+    }
+  }
+  for (const content::WebContents* contents : expired) {
+    DropAnswer(contents);
+  }
+  const base::TimeTicks now = base::TimeTicks::Now();
+  std::erase_if(Candidates(),
+                [&](const GrantCandidate& c) { return now > c.expires; });
+  std::erase_if(Grants(), [&](const PromptGrant& g) {
+    return !g.contents || now > g.expires;
+  });
+}
+
+void SweepLater(base::TimeDelta delay) {
+  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, base::BindOnce(&SweepExpired), delay);
 }
 
 std::optional<FilePickerKind> KindOfDialog(int dialog_type) {
@@ -92,55 +186,94 @@ std::optional<FilePickerKind> KindNamed(const std::string* name) {
 bool AnswerPicker(content::RenderFrameHost* frame,
                   int dialog_type,
                   std::vector<base::FilePath>* paths) {
+  SweepExpired();
   content::WebContents* contents =
       frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
   auto it = contents ? Answers().find(contents) : Answers().end();
   if (it == Answers().end()) {
     return false;
   }
-  if (!it->second.contents || base::TimeTicks::Now() > it->second.expires) {
-    Answers().erase(it);
+  if (!it->second->ForDocumentOf(frame)) {
+    DropAnswer(contents);
     return false;
   }
-  const std::optional<FilePickerKind> kind = KindOfDialog(dialog_type);
-  if (kind != it->second.kind) {
+  if (KindOfDialog(dialog_type) != it->second->kind()) {
     return false;
   }
-  Answer answer = std::move(it->second);
-  Answers().erase(it);
+  const FilePickerKind kind = it->second->kind();
+  const bool write = it->second->write();
+  const void* owner = it->second->owner();
+  std::vector<base::FilePath> answer = it->second->TakePaths();
+  DropAnswer(contents);
   ++TotalsSoFar().used;
   const bool fits =
-      answer.kind == FilePickerKind::kOpen
-          ? (answer.paths.size() <= 1 ||
+      kind == FilePickerKind::kOpen
+          ? (answer.size() <= 1 ||
              dialog_type == ui::SelectFileDialog::SELECT_OPEN_MULTI_FILE)
-          : answer.paths.size() <= 1;
+          : answer.size() <= 1;
   if (!fits) {
     paths->clear();
     return true;
   }
-  if (answer.kind == FilePickerKind::kDirectory && !answer.paths.empty()) {
-    std::erase_if(PromptGrants(), [&](const PromptGrant& grant) {
-      return !grant.contents || grant.contents.get() == contents;
-    });
-    PromptGrants().push_back(
-        {contents->GetWeakPtr(), answer.paths.front(),
-         base::TimeTicks::Now() + kPromptLifetime});
+  if (kind == FilePickerKind::kDirectory && !answer.empty()) {
+    Candidates().push_back({frame->GetGlobalId(),
+                            frame->GetLastCommittedOrigin(), answer.front(),
+                            write, owner,
+                            base::TimeTicks::Now() + kGrantLifetime});
+    SweepLater(kGrantLifetime);
   }
-  *paths = std::move(answer.paths);
+  *paths = std::move(answer);
   return true;
 }
 
-bool AnswerAccessPrompt(content::WebContents* contents,
-                        const base::FilePath& path) {
-  const base::TimeTicks now = base::TimeTicks::Now();
-  for (auto it = PromptGrants().begin(); it != PromptGrants().end(); ++it) {
-    if (it->contents.get() == contents && it->path == path &&
-        now <= it->expires) {
-      PromptGrants().erase(it);
-      return true;
-    }
+void GrantExpected(content::RenderFrameHost* frame,
+                   const base::FilePath& path,
+                   bool write) {
+  SweepExpired();
+  if (!frame) {
+    return;
   }
-  return false;
+  auto it = std::find_if(
+      Candidates().begin(), Candidates().end(), [&](const GrantCandidate& c) {
+        return c.frame == frame->GetGlobalId() && c.path == path;
+      });
+  if (it == Candidates().end()) {
+    return;
+  }
+  GrantCandidate candidate = std::move(*it);
+  Candidates().erase(it);
+  if (write && !candidate.write) {
+    return;
+  }
+  content::WebContents* contents =
+      content::WebContents::FromRenderFrameHost(frame);
+  if (!contents || frame->GetLastCommittedOrigin() != candidate.origin) {
+    return;
+  }
+  Grants().push_back({contents->GetWeakPtr(), candidate.origin, path, write,
+                      candidate.owner,
+                      base::TimeTicks::Now() + kGrantLifetime});
+  SweepLater(kGrantLifetime);
+}
+
+bool AnswerAccessPrompt(content::WebContents* contents,
+                        const url::Origin& origin,
+                        const base::FilePath& path,
+                        bool is_directory,
+                        bool wants_write) {
+  SweepExpired();
+  auto it = std::find_if(Grants().begin(), Grants().end(),
+                         [&](const PromptGrant& grant) {
+                           return grant.contents.get() == contents &&
+                                  grant.origin == origin &&
+                                  grant.path == path && is_directory &&
+                                  (!wants_write || grant.write);
+                         });
+  if (it == Grants().end()) {
+    return false;
+  }
+  Grants().erase(it);
+  return true;
 }
 
 }
@@ -157,6 +290,10 @@ std::string ArmFilePickerAnswer(content::WebContents* contents,
   if (!kind || !list) {
     return "without a kind (open, save or directory) and a paths list";
   }
+  const std::string* mode = params.FindString("mode");
+  if (mode && *mode != "read" && *mode != "readwrite") {
+    return "with a mode other than read or readwrite";
+  }
   std::vector<base::FilePath> paths;
   for (const base::Value& item : *list) {
     const base::FilePath path =
@@ -170,20 +307,33 @@ std::string ArmFilePickerAnswer(content::WebContents* contents,
   if (*kind != FilePickerKind::kOpen && paths.size() > 1) {
     return "with more than one path for that kind";
   }
-  Answers()[contents] = Answer{contents->GetWeakPtr(), *kind, std::move(paths),
-                               owner,
-                               base::TimeTicks::Now() + kAnswerLifetime};
+  DropAnswer(contents);
+  Answers()[contents] = std::make_unique<ArmedAnswer>(
+      contents, *kind, std::move(paths), mode && *mode == "readwrite", owner);
+  SweepLater(kAnswerLifetime);
   ++TotalsSoFar().armed;
   return std::string();
 }
 
 void ForgetFilePickerAnswers(const void* owner) {
-  std::erase_if(Answers(),
-                [&](const auto& entry) { return entry.second.owner == owner; });
+  std::vector<const content::WebContents*> owned;
+  for (const auto& [contents, answer] : Answers()) {
+    if (answer->owner() == owner) {
+      owned.push_back(contents);
+    }
+  }
+  for (const content::WebContents* contents : owned) {
+    DropAnswer(contents);
+  }
+  std::erase_if(Candidates(),
+                [&](const GrantCandidate& c) { return c.owner == owner; });
+  std::erase_if(Grants(),
+                [&](const PromptGrant& g) { return g.owner == owner; });
 }
 
 void InstallFilePickerAnswers() {
   g_ardia_file_picker_answer = &AnswerPicker;
+  g_ardia_file_picker_grant_expected = &GrantExpected;
   g_ardia_file_access_prompt_answer = &AnswerAccessPrompt;
 }
 

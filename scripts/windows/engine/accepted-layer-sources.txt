@@ -16,6 +16,7 @@ ac_cli_token_policy.h
 ac_cli_token_policy_events.cc
 ac_cli_token_policy_internal.h
 ac_cli_token_policy_plugin.cc
+ac_cli_token_policy_scope.cc
 ac_cli_visible_tabs.cc
 ac_cli_visible_tabs.h
 ac_cookies.cc

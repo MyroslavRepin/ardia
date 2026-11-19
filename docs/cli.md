@@ -96,7 +96,12 @@ argv (any process can read another's argv through `sysctl KERN_PROCARGS2`), in t
   An unknown or closed tab answers the error `no such tab`.
 - **Revoke.** `engine.cliPluginCredential {revoke: <id>}` (engine args `{"revoke": "<id>"}`) answers
   `{"revoked": true}`, or `false` for an unknown id. It forgets the credential and closes every connection made with
-  it. The app revokes when the activity ends; credentials also go when the browser quits.
+  it. The app revokes when the activity ends. A credential also dies with the window it was minted for, when the
+  control server stops or restarts (mint again after turning control back on) and when the browser quits. A profile
+  holds at most 16 live credentials; past that, minting answers `too many plugin credentials for this profile`.
+- **What a plugin connection may do** is an exact allowlist (`docs/engine-build.md` › `chromium-devtools-control-token.patch`):
+  DOM and accessibility reads, page navigation and screenshots, input, and Runtime only in an isolated world it created.
+  When its tab leaves the window, its session is detached and commands in flight answer `ardia: tab_out_of_scope`.
 - **Handing it to the CLI child.** The app creates a pipe, writes the credential to it and closes its write end, and
   passes the read end to the child as an inherited fd (`posix_spawn_file_actions_adddup2`; with
   `POSIX_SPAWN_CLOEXEC_DEFAULT` nothing else leaks). It sets `ARDIA_PLUGIN_CREDENTIAL_FD=<n>`, the fd number only, and

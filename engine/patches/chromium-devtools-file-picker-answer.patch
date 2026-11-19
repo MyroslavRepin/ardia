@@ -1,36 +1,87 @@
 diff --git a/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc b/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc
 --- a/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc
 +++ b/chrome/browser/file_system_access/file_system_access_permission_request_manager.cc
-@@ -4,6 +4,12 @@
+@@ -4,6 +4,8 @@
  
  #include "chrome/browser/file_system_access/file_system_access_permission_request_manager.h"
  
 +#include "ardia/core/ac_content_hooks.h"  // nogncheck
 +
-+bool (*g_ardia_file_access_prompt_answer)(content::WebContents* contents,
-+                                         const base::FilePath& path) =
-+    nullptr;
-+
  #include "base/command_line.h"
  #include "base/functional/bind.h"
  #include "chrome/browser/ui/file_system_access/file_system_access_dialogs.h"
-@@ -195,6 +201,16 @@ void FileSystemAccessPermissionRequestManager::DequeueAndShowRequest() {
+@@ -183,6 +185,12 @@ void FileSystemAccessPermissionRequestManager::ScheduleShowRequest() {
+           weak_factory_.GetWeakPtr()));
+ }
+ 
++bool (*g_ardia_file_access_prompt_answer)(content::WebContents* contents,
++                                         const url::Origin& origin,
++                                         const base::FilePath& path,
++                                         bool is_directory,
++                                         bool wants_write) = nullptr;
++
+ void FileSystemAccessPermissionRequestManager::DequeueAndShowRequest() {
+   if (!CanShowRequest())
+     return;
+@@ -195,6 +203,23 @@ void FileSystemAccessPermissionRequestManager::DequeueAndShowRequest() {
      return;
    }
  
 +  if (g_ardia_file_access_prompt_answer &&
 +      current_request_->data.request_type == RequestType::kNewPermission &&
-+      current_request_->data.file_request_data.size() == 1 &&
-+      g_ardia_file_access_prompt_answer(
-+          web_contents(),
-+          current_request_->data.file_request_data.front().path_info.path)) {
-+    OnPermissionDialogResult(permissions::PermissionAction::GRANTED);
-+    return;
++      current_request_->data.file_request_data.size() == 1) {
++    const FileRequestData& ardia_file =
++        current_request_->data.file_request_data.front();
++    if (g_ardia_file_access_prompt_answer(
++            web_contents(), current_request_->data.origin,
++            ardia_file.path_info.path,
++            ardia_file.handle_type ==
++                content::FileSystemAccessPermissionContext::HandleType::
++                    kDirectory,
++            ardia_file.access != Access::kRead)) {
++      OnPermissionDialogResult(permissions::PermissionAction::GRANTED);
++      return;
++    }
 +  }
 +
    switch (current_request_->data.request_type) {
      case RequestType::kNewPermission:
        ShowFileSystemAccessPermissionDialog(
+diff --git a/content/browser/file_system_access/file_system_access_manager_impl.cc b/content/browser/file_system_access/file_system_access_manager_impl.cc
+--- a/content/browser/file_system_access/file_system_access_manager_impl.cc
++++ b/content/browser/file_system_access/file_system_access_manager_impl.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "content/browser/file_system_access/file_system_access_manager_impl.h"
+ 
++#include "ardia/core/ac_content_hooks.h"  // nogncheck
++
+ #include <algorithm>
+ #include <iterator>
+ #include <memory>
+@@ -92,6 +94,10 @@
+ #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
+ #endif
+ 
++void (*g_ardia_file_picker_grant_expected)(content::RenderFrameHost* frame,
++                                           const base::FilePath& path,
++                                           bool write) = nullptr;
++
+ namespace content {
+ 
+ using blink::mojom::FileSystemAccessStatus;
+@@ -2062,6 +2068,11 @@ void FileSystemAccessManagerImpl::OnCheckPathsAgainstEnterprisePolicy(
+             entries.front(), binding_context.storage_key,
+             HandleType::kDirectory,
+             FileSystemAccessPermissionContext::AccessTrigger::kOpen);
++    if (g_ardia_file_picker_grant_expected) {
++      g_ardia_file_picker_grant_expected(
++          RenderFrameHost::FromID(binding_context.frame_id),
++          entries.front().path, request_directory_write_access);
++    }
+     // Ask for both read and write permission at the same time. The permission
+     // context should coalesce these into one prompt.
+     if (request_directory_write_access) {
 diff --git a/content/browser/file_system_access/file_system_chooser.cc b/content/browser/file_system_access/file_system_chooser.cc
 --- a/content/browser/file_system_access/file_system_chooser.cc
 +++ b/content/browser/file_system_access/file_system_chooser.cc

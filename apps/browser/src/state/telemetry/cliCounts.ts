@@ -1,4 +1,5 @@
 import type { ConsentToken } from "./choice";
+import { consentEpoch } from "./choice";
 import { countFor } from "./countFor";
 
 export type CliInstallReason = "auto" | "settings" | "upgrade";
@@ -92,7 +93,20 @@ export function notePickerAnswers(totals: { armed?: number; used?: number } | un
   pickerSeen = { armed: Math.max(armed, pickerSeen.armed), used: Math.max(used, pickerSeen.used) };
 }
 
-export function noteCliEngineTotals(status: { windowlessPages?: { given: number; missed: number }; commandsByDomain?: CdpCommandsByDomain; pluginCredentials?: Partial<Record<keyof typeof PLUGIN_TOTALS, number>>; filePickerAnswers?: { armed?: number; used?: number } }) {
+type EngineTotals = { windowlessPages?: { given: number; missed: number }; commandsByDomain?: CdpCommandsByDomain; pluginCredentials?: Partial<Record<keyof typeof PLUGIN_TOTALS, number>>; filePickerAnswers?: { armed?: number; used?: number } };
+let baselineEpoch: string | null = null;
+
+export function noteCliEngineTotals(status: EngineTotals, epoch: string = consentEpoch()) {
+  if (epoch !== baselineEpoch) {
+    baselineEpoch = epoch;
+    const counted = { ...counts };
+    noteWindowlessPages(status.windowlessPages);
+    noteCdpCommands(status.commandsByDomain);
+    notePluginTotals(status.pluginCredentials);
+    notePickerAnswers(status.filePickerAnswers);
+    counts = counted;
+    return;
+  }
   noteWindowlessPages(status.windowlessPages);
   noteCdpCommands(status.commandsByDomain);
   notePluginTotals(status.pluginCredentials);

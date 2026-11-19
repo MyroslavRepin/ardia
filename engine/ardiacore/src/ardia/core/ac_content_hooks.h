@@ -17,6 +17,10 @@ namespace base {
 class FilePath;
 }
 
+namespace url {
+class Origin;
+}
+
 namespace content {
 class BrowserContext;
 class DevToolsAgentHost;
@@ -154,6 +158,9 @@ class ArdiaDevToolsTokenClient {
   virtual bool MayReadLocalFiles() = 0;
   virtual bool MayWriteLocalFiles() = 0;
   virtual void SetCloser(base::OnceClosure close) = 0;
+  virtual void SetChannel(
+      base::RepeatingCallback<void(std::string)> to_browser,
+      base::RepeatingCallback<void(std::string)> to_client) = 0;
 };
 
 extern std::unique_ptr<ArdiaDevToolsTokenClient> (*g_ardia_devtools_token_client)(
@@ -181,7 +188,15 @@ extern bool (*g_ardia_file_picker_answer)(content::RenderFrameHost* frame,
                                           int dialog_type,
                                           std::vector<base::FilePath>* paths);
 
+extern void (*g_ardia_file_picker_grant_expected)(
+    content::RenderFrameHost* frame,
+    const base::FilePath& path,
+    bool write);
+
 extern bool (*g_ardia_file_access_prompt_answer)(content::WebContents* contents,
-                                                 const base::FilePath& path);
+                                                 const url::Origin& origin,
+                                                 const base::FilePath& path,
+                                                 bool is_directory,
+                                                 bool wants_write);
 
 #endif

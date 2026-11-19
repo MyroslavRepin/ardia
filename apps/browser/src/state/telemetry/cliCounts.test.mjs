@@ -37,16 +37,31 @@ test("the token connection's commands by domain turn into counts since the last 
 
 test("plugin credential totals from the engine turn into counts since the last take", () => {
   takeCliCounts();
-  noteCliEngineTotals({ pluginCredentials: { minted: 2, revoked: 1, refused: 4 } });
-  noteCliEngineTotals({ pluginCredentials: { minted: 3, revoked: 1, refused: 3 } });
+  noteCliEngineTotals({ pluginCredentials: { minted: 0, revoked: 0, refused: 0 } }, "plugins");
+  noteCliEngineTotals({ pluginCredentials: { minted: 2, revoked: 1, refused: 4 } }, "plugins");
+  noteCliEngineTotals({ pluginCredentials: { minted: 3, revoked: 1, refused: 3 } }, "plugins");
   const counts = takeCliCounts();
   assert.deepEqual([counts.cli_plugin_credentials_minted, counts.cli_plugin_credentials_revoked, counts.cli_plugin_commands_refused], [3, 1, 4]);
 });
 
 test("file picker answers the engine counts turn into counts since the last take", () => {
   takeCliCounts();
-  noteCliEngineTotals({ filePickerAnswers: { armed: 3, used: 2 } });
-  noteCliEngineTotals({ filePickerAnswers: { armed: 4, used: 2 } });
+  noteCliEngineTotals({ filePickerAnswers: { armed: 0, used: 0 } }, "pickers");
+  noteCliEngineTotals({ filePickerAnswers: { armed: 3, used: 2 } }, "pickers");
+  noteCliEngineTotals({ filePickerAnswers: { armed: 4, used: 2 } }, "pickers");
   const counts = takeCliCounts();
   assert.deepEqual([counts.cli_file_picker_answers_armed, counts.cli_file_picker_answers_used], [4, 2]);
+});
+
+test("the first sample of a consent period counts nothing from before it, and a new period takes a new baseline", () => {
+  takeCliCounts();
+  noteCliEngineTotals({ commandsByDomain: { dom: 40 }, pluginCredentials: { minted: 5, revoked: 0, refused: 9 }, filePickerAnswers: { armed: 2, used: 2 } }, "period-1");
+  let counts = takeCliCounts();
+  assert.deepEqual([counts.cli_cdp_commands_dom, counts.cli_plugin_credentials_minted, counts.cli_plugin_commands_refused, counts.cli_file_picker_answers_used], [0, 0, 0, 0]);
+  noteCliEngineTotals({ commandsByDomain: { dom: 43 }, pluginCredentials: { minted: 6, revoked: 0, refused: 9 }, filePickerAnswers: { armed: 2, used: 2 } }, "period-1");
+  counts = takeCliCounts();
+  assert.deepEqual([counts.cli_cdp_commands_dom, counts.cli_plugin_credentials_minted], [3, 1]);
+  noteCliEngineTotals({ commandsByDomain: { dom: 90 }, pluginCredentials: { minted: 9, revoked: 0, refused: 9 }, filePickerAnswers: { armed: 2, used: 2 } }, "period-2");
+  counts = takeCliCounts();
+  assert.deepEqual([counts.cli_cdp_commands_dom, counts.cli_plugin_credentials_minted], [0, 0]);
 });

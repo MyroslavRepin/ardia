@@ -4,6 +4,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "base/json/json_reader.h"
 #include "base/strings/string_number_conversions.h"
@@ -67,19 +68,22 @@ void ForgetDestroyedTarget(const std::string& message) {
 }
 
 bool TokenClient::FilterEvent(std::string& message) {
+  if (revoked_) {
+    return false;
+  }
   std::string_view view(message);
   constexpr std::string_view kEvent = R"({"method":")";
   if (view.starts_with(kEvent)) {
     size_t end = view.find('"', kEvent.size());
     if (end == std::string_view::npos) {
-      return true;
+      return kind_ == TokenKind::kCli;
     }
     std::string_view method = view.substr(kEvent.size(), end - kEvent.size());
+    if (kind_ == TokenKind::kPlugin) {
+      return FilterPluginEvent(method, ReplySession(view), message);
+    }
     if (method == "Target.attachedToTarget" ||
-        method == "Target.detachedFromTarget" ||
-        (kind_ == TokenKind::kPlugin &&
-         (method == "Target.targetCreated" ||
-          method == "Target.targetInfoChanged"))) {
+        method == "Target.detachedFromTarget") {
       return FilterTargetEvent(method, message);
     }
     if (method == "Target.targetDestroyed") {
@@ -91,7 +95,7 @@ bool TokenClient::FilterEvent(std::string& message) {
     return true;
   }
   if (outstanding_.empty()) {
-    return true;
+    return kind_ == TokenKind::kCli;
   }
   std::optional<int> id = ParseResponseId(view);
   std::string session;
@@ -101,11 +105,11 @@ bool TokenClient::FilterEvent(std::string& message) {
     std::optional<base::Value> parsed =
         base::JSONReader::Read(message, base::JSON_PARSE_RFC);
     if (!parsed || !parsed->is_dict()) {
-      return true;
+      return kind_ == TokenKind::kCli;
     }
     id = parsed->GetDict().FindInt("id");
     if (!id) {
-      return true;
+      return kind_ == TokenKind::kCli;
     }
     if (const std::string* found = parsed->GetDict().FindString("sessionId")) {
       session = *found;
@@ -113,10 +117,13 @@ bool TokenClient::FilterEvent(std::string& message) {
   }
   auto it = outstanding_.find({session, *id});
   if (it == outstanding_.end()) {
-    return true;
+    return kind_ == TokenKind::kCli;
   }
   const std::string method = std::move(it->second);
   outstanding_.erase(it);
+  if (method == kInternalCommand) {
+    return false;
+  }
   if (method.empty()) {
     return true;
   }
@@ -139,32 +146,66 @@ void TokenClient::ForgetSessionOf(const std::string& message) {
   ForgetSession(session ? *session : std::string());
 }
 
+std::vector<std::string> TokenClient::Subtree(
+    const std::string& session) const {
+  std::vector<std::string> subtree = {session};
+  for (size_t next = 0; next < subtree.size(); ++next) {
+    for (const auto& [child, parent] : parents_) {
+      if (parent == subtree[next]) {
+        subtree.push_back(child);
+      }
+    }
+  }
+  return subtree;
+}
+
+void TokenClient::DropSubtree(const std::string& session) {
+  for (const std::string& gone : Subtree(session)) {
+    targets_.erase(gone);
+    parents_.erase(gone);
+    contexts_.erase(gone);
+    ForgetSession(gone);
+  }
+}
+
 bool TokenClient::FilterTargetEvent(std::string_view method,
                                     const std::string& message) {
   std::optional<base::Value> parsed =
       base::JSONReader::Read(message, base::JSON_PARSE_RFC);
-  const base::DictValue* params =
-      parsed && parsed->is_dict() ? parsed->GetDict().FindDict("params")
-                                  : nullptr;
+  const base::DictValue* event = parsed && parsed->is_dict()
+                                     ? &parsed->GetDict()
+                                     : nullptr;
+  const base::DictValue* params = event ? event->FindDict("params") : nullptr;
   if (!params) {
     return kind_ == TokenKind::kCli;
   }
   const std::string* child = params->FindString("sessionId");
   if (method == "Target.detachedFromTarget") {
-    if (child) {
-      targets_.erase(*child);
-      ForgetSession(*child);
+    if (!child) {
+      return kind_ == TokenKind::kCli;
     }
-    return true;
+    const bool known = targets_.contains(*child) || detaching_.contains(*child);
+    DropSubtree(*child);
+    detaching_.erase(*child);
+    return kind_ == TokenKind::kCli || known;
   }
   const base::DictValue* info = params->FindDict("targetInfo");
   const std::string* target_id = info ? info->FindString("targetId") : nullptr;
+  if (!child || !target_id) {
+    return kind_ == TokenKind::kCli;
+  }
+  const std::string* parent = event->FindString("sessionId");
   if (kind_ == TokenKind::kPlugin &&
       !PluginMayAttachToTargetId(*scope_, target_id)) {
+    detaching_.insert(*child);
+    SendInternal(parent ? *parent : std::string(), "Target.detachFromTarget",
+                 base::DictValue().Set("sessionId", *child));
     return false;
   }
-  if (method == "Target.attachedToTarget" && child && target_id) {
-    targets_[*child] = *target_id;
+  targets_[*child] = *target_id;
+  parents_[*child] = parent ? *parent : std::string();
+  if (kind_ == TokenKind::kPlugin) {
+    told_targets_.insert(*target_id);
   }
   return true;
 }

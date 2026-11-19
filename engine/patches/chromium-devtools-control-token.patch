@@ -75,7 +75,7 @@
      TerminateOnUI(std::move(thread),
                    std::unique_ptr<ServerWrapper>(server_wrapper),
                    std::unique_ptr<DevToolsSocketFactory>(socket_factory));
-@@ -340,17 +387,68 @@
+@@ -340,17 +387,73 @@
        ServerWrapper* server_wrapper,
        int connection_id,
        scoped_refptr<DevToolsAgentHost> agent_host,
@@ -108,6 +108,11 @@
 +          },
 +          task_runner_, base::Unretained(server_wrapper_.get()),
 +          connection_id_));
++      ardia_token_client_->SetChannel(
++          base::BindRepeating(&DevToolsAgentHostClientImpl::DispatchFromArdia,
++                              base::Unretained(this)),
++          base::BindRepeating(&DevToolsAgentHostClientImpl::SendToSocket,
++                              base::Unretained(this)));
 +    }
      // TODO(dgozman): handle return value of AttachClient.
 -    agent_host_->AttachClient(this);
@@ -146,7 +151,7 @@
    ~DevToolsAgentHostClientImpl() override {
      CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
      if (agent_host_)
-@@ -384,17 +482,37 @@
+@@ -384,17 +487,37 @@
                                 base::span<const uint8_t> message) override {
      CHECK_CURRENTLY_ON(BrowserThread::UI, base::NotFatalUntil::M159);
      CHECK(agent_host == agent_host_.get(), base::NotFatalUntil::M159);
@@ -191,12 +196,18 @@
    }
  
   private:
-@@ -403,6 +521,16 @@
+@@ -403,6 +526,22 @@
    const int connection_id_;
    scoped_refptr<DevToolsAgentHost> agent_host_;
    const net::IPEndPoint peer_address_;
 +  std::unique_ptr<ArdiaDevToolsTokenClient> ardia_token_client_;
 +  bool attached_ = false;
++
++  void DispatchFromArdia(std::string message) {
++    if (agent_host_) {
++      agent_host_->DispatchProtocolMessage(this, base::as_byte_span(message));
++    }
++  }
 +
 +  void SendToSocket(std::string text) {
 +    task_runner_->PostTask(
@@ -208,7 +219,7 @@
  };
  
  static bool TimeComparator(scoped_refptr<DevToolsAgentHost> host1,
-@@ -429,6 +557,9 @@
+@@ -429,6 +568,9 @@
    // by the targets. It is essential that this happens before we issue delete
    // soon for the server wrapper.
    connection_to_client_.clear();
@@ -218,7 +229,7 @@
    TerminateOnUI(std::move(thread_), std::move(server_wrapper_),
                  std::move(socket_factory_));
    delegate_ = nullptr;
-@@ -484,6 +615,13 @@
+@@ -484,6 +626,13 @@
    }
  
    server_->SetSendBufferSize(connection_id, kSendBufferSizeForDevTools);
@@ -232,7 +243,7 @@
  
    if (base::StartsWith(info.path, "/json", base::CompareCase::SENSITIVE)) {
      GetUIThreadTaskRunner({})->PostTask(
-@@ -603,7 +741,8 @@
+@@ -603,7 +752,8 @@
      int connection_id,
      const net::HttpServerRequestInfo& info) {
    if (mode_ ==
@@ -242,7 +253,7 @@
      Send404(connection_id);
      return;
    }
-@@ -781,11 +920,36 @@
+@@ -781,11 +931,36 @@
      }
    }
    SendJson(connection_id, net::HTTP_OK, list_value, "");
@@ -280,7 +291,7 @@
      Send404(connection_id);
      return;
    }
-@@ -803,7 +967,8 @@
+@@ -803,7 +978,8 @@
  void DevToolsHttpHandler::OnFrontendResourceRequest(int connection_id,
                                                      std::string_view path) {
    if (mode_ ==
@@ -290,7 +301,7 @@
      Send404(connection_id);
      return;
    }
-@@ -842,6 +1007,11 @@
+@@ -842,6 +1018,11 @@
    if (!thread_)
      return;
  
@@ -302,7 +313,7 @@
    bool is_same_origin =
        server_ip_address_ &&
        url::Origin::Create(
-@@ -863,6 +1033,31 @@
+@@ -863,6 +1044,31 @@
      return;
    }
  
@@ -334,7 +345,7 @@
    // If we require user approval, we do not require guid.
    if (mode_ ==
        DevToolsAgentHost::RemoteDebuggingServerMode::kWithApprovalOnly) {
-@@ -878,28 +1073,33 @@
+@@ -878,28 +1084,33 @@
      return;
    }
  
@@ -376,7 +387,7 @@
    scoped_refptr<DevToolsAgentHost> agent =
        DevToolsAgentHost::GetForId(target_id);
    if (!agent) {
-@@ -914,12 +1114,17 @@
+@@ -914,12 +1125,17 @@
      return;
    }
  
@@ -399,7 +410,7 @@
  }
  
  void DevToolsHttpHandler::OnWebSocketMessage(int connection_id,
-@@ -932,6 +1137,9 @@
+@@ -932,6 +1148,9 @@
  
  void DevToolsHttpHandler::OnClose(int connection_id) {
    auto removed_count = connection_to_client_.erase(connection_id);
@@ -409,7 +420,7 @@
    if (delegate_ && removed_count > 0 &&
        mode_ ==
            DevToolsAgentHost::RemoteDebuggingServerMode::kWithApprovalOnly) {
-@@ -946,6 +1154,8 @@
+@@ -946,6 +1165,8 @@
      const base::FilePath& debug_frontend_dir,
      DevToolsAgentHost::RemoteDebuggingServerMode mode)
      : mode_(mode), delegate_(delegate) {
@@ -418,7 +429,7 @@
    browser_guid_ =
        delegate_->IsBrowserTargetDiscoverable()
            ? kBrowserUrlPrefix
-@@ -984,8 +1194,20 @@
+@@ -984,8 +1205,20 @@
    server_wrapper_ = std::move(server_wrapper);
    socket_factory_ = std::move(socket_factory);
    server_ip_address_ = std::move(ip_address);
@@ -439,7 +450,7 @@
  void DevToolsHttpHandler::SendJson(int connection_id,
                                     net::HttpStatusCode status_code,
                                     std::optional<base::ValueView> value,
-@@ -1065,6 +1287,9 @@
+@@ -1065,6 +1298,9 @@
        DevToolsAgentHost::RemoteDebuggingServerMode::kWithApprovalOnly) {
      delegate_->SetActiveWebSocketConnections(connection_to_client_.size());
    }

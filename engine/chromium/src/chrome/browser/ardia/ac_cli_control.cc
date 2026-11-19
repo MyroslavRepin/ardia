@@ -478,6 +478,7 @@ class ControlServer {
     SetLiveGeneration(0);
     port_ = 0;
     connections_ = 0;
+    ClearPluginCredentials();
     FileRunner()->PostTask(FROM_HERE,
                            base::BindOnce(&DeleteControlFile, file_path_));
   }

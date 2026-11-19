@@ -18,6 +18,7 @@
 #include "base/json/json_writer.h"
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/ardia/ac_cli_file_picker.h"
 #include "chrome/browser/ardia/ac_cli_owned_tabs.h"
@@ -31,6 +32,8 @@ namespace ardia {
 namespace cli_token_policy_internal {
 
 namespace {
+
+constexpr base::TimeDelta kScopeCheckInterval = base::Seconds(1);
 
 constexpr std::array<std::pair<std::string_view, CommandDomain>, 11>
     kCountedDomains = {{
@@ -60,7 +63,8 @@ std::array<int, static_cast<size_t>(CommandDomain::kCount)>& CommandCounts() {
 
 bool NeedsResponse(const std::string& method) {
   return method == "Target.getTargets" || method == "Target.getTargetInfo" ||
-         method == "Target.createTarget";
+         method == "Target.createTarget" ||
+         method == "Page.createIsolatedWorld";
 }
 
 std::vector<TokenClient*> ClientsOf(const std::string& credential_id) {
@@ -138,10 +142,17 @@ TokenClient::TokenClient(content::DevToolsAgentHostClient* client,
       scope_(std::move(scope)) {
   CHECK_EQ(kind_ == TokenKind::kPlugin, scope_.has_value());
   Registry()[client_] = this;
+  if (kind_ == TokenKind::kPlugin) {
+    scope_timer_.Start(FROM_HERE, kScopeCheckInterval,
+                       base::BindRepeating(&TokenClient::CheckScope,
+                                           base::Unretained(this)));
+  }
 }
 
 void TokenClient::Revoke() {
+  revoked_ = true;
   wedged_ = true;
+  scope_timer_.Stop();
   if (closer_) {
     std::move(closer_).Run();
   }
@@ -149,6 +160,13 @@ void TokenClient::Revoke() {
 
 void TokenClient::SetCloser(base::OnceClosure close) {
   closer_ = std::move(close);
+}
+
+void TokenClient::SetChannel(
+    base::RepeatingCallback<void(std::string)> to_browser,
+    base::RepeatingCallback<void(std::string)> to_client) {
+  to_browser_ = std::move(to_browser);
+  to_client_ = std::move(to_client);
 }
 
 bool TokenClient::MayAttachToURL(const GURL& url, bool is_webui) {
@@ -201,28 +219,10 @@ bool TokenClient::FilterCommand(std::string& message, std::string* reply) {
                         "ardia: params must be an object");
     return false;
   }
-  if (wedged_) {
+  if (wedged_ || revoked_) {
     *reply = ErrorReply(*id, session, kRefused,
                         "ardia: this connection is closing");
     return false;
-  }
-  if (kind_ == TokenKind::kPlugin) {
-    const base::DictValue empty;
-    const base::DictValue* params = command.FindDict("params");
-    const std::string refusal =
-        PluginRefusal(*scope_, *method, params ? *params : empty,
-                      session.empty());
-    if (!refusal.empty()) {
-      ++PluginTotalsSoFar().refused;
-      *reply = ErrorReply(*id, session, kMethodNotAllowed,
-                          base::StrCat({"ardia: ", *method, " ", refusal,
-                                        " isn't allowed for a plugin"}));
-      return false;
-    }
-  }
-  if (*method == kAnswerFilePicker) {
-    return AnswerFilePickerCommand(*id, session, command.FindDict("params"),
-                                   reply);
   }
   const std::pair<std::string, int> key(session, *id);
   if (outstanding_.contains(key)) {
@@ -238,7 +238,21 @@ bool TokenClient::FilterCommand(std::string& message, std::string* reply) {
     wedged_ = true;
     return false;
   }
-  NoteCommand(*method, session, command.FindDict("params"));
+  base::DictValue& params = *command.EnsureDict("params");
+  if (kind_ == TokenKind::kPlugin &&
+      !PluginCommandAllowed(*id, session, *method, params, reply)) {
+    return false;
+  }
+  if (*method == kAnswerFilePicker) {
+    return AnswerFilePickerCommand(*id, session, &params, reply);
+  }
+  if (*method == "IO.read") {
+    const std::optional<int> size = params.FindInt("size");
+    if (size && *size > kMaxIoReadBytes) {
+      params.Set("size", kMaxIoReadBytes);
+    }
+  }
+  NoteCommand(*method, session, &params);
   outstanding_[key] = NeedsResponse(*method) ? *method : std::string();
   message = base::WriteJson(command).value_or(std::string());
   return !message.empty();
@@ -300,9 +314,17 @@ bool TokenClient::FilterResponse(const std::string& method,
   if (!result) {
     return true;
   }
+  const std::string* session_id = parsed->GetDict().FindString("sessionId");
+  const std::string session = session_id ? *session_id : std::string();
   if (method == "Target.createTarget") {
     if (const std::string* target_id = result->FindString("targetId")) {
       NoteCliOwnedTarget(*target_id, this);
+    }
+    return true;
+  }
+  if (method == "Page.createIsolatedWorld") {
+    if (std::optional<int> context = result->FindInt("executionContextId")) {
+      AllowContext(session, *context);
     }
     return true;
   }
@@ -320,9 +342,25 @@ bool TokenClient::FilterResponse(const std::string& method,
     }
     for (base::Value& info : *infos) {
       MarkOffscreen(info.GetIfDict());
+      if (kind_ == TokenKind::kPlugin) {
+        if (const std::string* target_id = info.GetDict().FindString("targetId")) {
+          told_targets_.insert(*target_id);
+        }
+      }
     }
   } else {
-    MarkOffscreen(result->FindDict("targetInfo"));
+    base::DictValue* info = result->FindDict("targetInfo");
+    MarkOffscreen(info);
+    const std::string* target_id = info ? info->FindString("targetId") : nullptr;
+    if (kind_ == TokenKind::kPlugin && target_id) {
+      if (!PluginMayAttachToTargetId(*scope_, target_id)) {
+        message = ErrorReply(
+            parsed->GetDict().FindInt("id").value_or(0), session, kRefused,
+            base::StrCat({kOutOfScope, ": the tab left the plugin's window"}));
+        return true;
+      }
+      told_targets_.insert(*target_id);
+    }
   }
   std::optional<std::string> annotated = base::WriteJson(*parsed);
   if (annotated) {
