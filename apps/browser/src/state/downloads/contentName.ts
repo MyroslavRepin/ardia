@@ -12,6 +12,7 @@ export const CONTENT_NAME_CATEGORIES = [
   "form",
   "ticket",
   "screenshot",
+  "photo",
   "notes",
   "code",
   "data",

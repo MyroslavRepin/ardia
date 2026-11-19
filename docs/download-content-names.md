@@ -9,7 +9,7 @@ When it's on, each download that finishes while Ardia watches it is read on this
   Mac only). When Apple Intelligence is off, not downloaded or not supported on the Mac, downloads are left as they
   are, with nothing shown. `FoundationModels` is weak-linked, so the app still launches on macOS 14 and 15.
 - **What is read** (`packages/ardiacore/ios/DownloadNamer.swift`): the first 3 pages of a PDF (PDFKit), text in an
-  image (Vision OCR), RTF, Word and OpenDocument text, and the first 64 KB of plain text, source, JSON, CSV and HTML.
+  image (Vision OCR), or for a photo without text what it shows (Vision `ClassifyImageRequest`, up to 6 labels), RTF, Word and OpenDocument text, and the first 64 KB of plain text, source, JSON, CSV and HTML.
   At most 6,000 characters go to the model; anything else (archives, disk images, audio, video) keeps its name. The
   model answers a fixed shape (`@Generable`): a category from a fixed list, a short title and an optional date.
 - **The name** (`state/downloads/contentName.ts`): the date the content states when it's a real one, else the day the

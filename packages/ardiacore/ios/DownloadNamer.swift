@@ -16,6 +16,8 @@ enum DownloadNamer {
   static let pdfPageLimit = 3
   static let ocrMinimumCharacters = 24
   static let ocrMaxPixels = 2048
+  static let labelConfidence: Float = 0.03
+  static let labelLimit = 6
   static let excerptMinimumCharacters = 12
 
   typealias Answer = [String: String]
@@ -111,7 +113,7 @@ struct SuggestedDownloadName {
     description: "What kind of file this is",
     .anyOf([
       "invoice", "receipt", "statement", "contract", "report", "paper", "slides", "resume", "letter", "manual", "form",
-      "ticket", "screenshot", "notes", "code", "data", "book", "other",
+      "ticket", "screenshot", "photo", "notes", "code", "data", "book", "other",
     ]))
   var category: String
 
@@ -143,7 +145,7 @@ extension DownloadNamer {
     if type.conforms(to: .pdf) {
       text = pdfText(url)
     } else if type.conforms(to: .image) {
-      text = await recognizedText(url)
+      text = await imageDescription(url)
     } else if type.conforms(to: .rtf) || type.conforms(to: .rtfd) || wordProcessing(type) {
       text = (try? NSAttributedString(url: url, options: [:], documentAttributes: nil))?.string
     } else if type.conforms(to: .html) {
@@ -159,14 +161,29 @@ extension DownloadNamer {
     return String(squeezed.prefix(excerptLimit))
   }
 
-  private static func recognizedText(_ url: URL) async -> String? {
+  private static func imageDescription(_ url: URL) async -> String? {
     guard let image = opaqueImage(url) else { return nil }
+    let text = await recognizedText(image)
+    if let text, text.count >= ocrMinimumCharacters { return text }
+    var request = ClassifyImageRequest()
+    request.cropAndScaleAction = .scaleToFit
+    guard let observations = try? await request.perform(on: image) else { return text }
+    let labels = observations
+      .filter { $0.confidence >= labelConfidence }
+      .sorted { $0.confidence > $1.confidence }
+      .prefix(labelLimit)
+      .map { $0.identifier.replacingOccurrences(of: "_", with: " ") }
+    guard !labels.isEmpty else { return text }
+    return "A photo or picture. What it shows, most likely first: \(labels.joined(separator: ", "))." + (text.map { " Text in it: \($0)" } ?? "")
+  }
+
+  private static func recognizedText(_ image: CGImage) async -> String? {
     var request = RecognizeTextRequest()
     request.recognitionLevel = .accurate
     request.usesLanguageCorrection = true
     guard let observations = try? await request.perform(on: image) else { return nil }
     let text = observations.compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
-    return text.count >= ocrMinimumCharacters ? text : nil
+    return text.isEmpty ? nil : text
   }
 
   private static func answer(model: SystemLanguageModel, filename: String, text: String) async throws -> Answer {
