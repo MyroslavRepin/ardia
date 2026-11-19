@@ -24,6 +24,36 @@ test("a JS error is on disk the moment it's captured, so a crash right after can
   assert.equal(props.$exception_list[0].value, "Attempting to run JS driven animation on a native node");
 });
 
+test("an error that wraps a cause, like React's recovered render error, sends the cause after it", () => {
+  const before = queued().length;
+  const cause = new TypeError("Cannot read properties of undefined (reading 'title')");
+  const wrapper = new Error("Minified React error #520; visit https://react.dev/errors/520 for the full message", { cause });
+  captureException(wrapper, "onerror");
+  const looping = new Error("outer loop");
+  looping.cause = looping;
+  captureException(looping, "onerror");
+  const events = queued();
+  assert.equal(events.length, before + 2);
+  const props = events.at(-2).properties;
+  assert.deepEqual(props.$exception_types, ["Error", "TypeError"]);
+  assert.equal(props.$exception_list[0].value.startsWith("Minified React error #520"), true);
+  assert.equal(props.$exception_list[1].type, "TypeError");
+  assert.equal(props.$exception_list[1].mechanism.type, "onerror");
+  assert.deepEqual(events.at(-1).properties.$exception_types, ["Error"]);
+});
+
+test("a cause's message is scrubbed exactly as the error's own message is", () => {
+  const raw = "Failed to load https://mail.example.com/u/0/inbox?id=42 for 'someone@example.com'";
+  const cause = new Error(raw);
+  captureException(new Error("outer wrapper", { cause }), "onerror");
+  captureException(new RangeError(raw), "onerror");
+  const events = queued();
+  const asCause = events.at(-2).properties.$exception_list[1].value;
+  const asError = events.at(-1).properties.$exception_list[0].value;
+  assert.equal(asCause, asError);
+  assert.equal(asCause.includes("mail.example.com") || asCause.includes("someone@example.com"), false);
+});
+
 test("a native crash names its exception and the app's images at the top level, never its reason", async () => {
   stub.shellNativeModules.ArdiaApp.crashReports = async () => [
     {

@@ -26,24 +26,39 @@ function exceptionProperties(entries: ExceptionEntry[], mechanism: Mechanism, ha
   };
 }
 
+const MAX_CAUSES = 3;
+
+function causeChain(error: unknown): ExceptionEntry[] {
+  const entries: ExceptionEntry[] = [];
+  const visited = new Set<unknown>();
+  let current = error;
+  do {
+    visited.add(current);
+    const type = errorType(current);
+    entries.push({ type, value: errorMessage(current) || type, frames: parseStack(current && typeof current === "object" ? (current as { stack?: unknown }).stack : undefined) });
+    current = current && typeof current === "object" ? (current as { cause?: unknown }).cause : undefined;
+  } while (current != null && !visited.has(current) && entries.length <= MAX_CAUSES);
+  return entries;
+}
+
 export function captureException(error: unknown, mechanism: Mechanism, { fatal = false, handled = false, consent }: { fatal?: boolean; handled?: boolean; consent?: ConsentToken | null } = {}) {
   try {
     if (error && typeof error === "object") {
       if (reported.has(error)) return;
       reported.add(error);
     }
-    const type = errorType(error);
-    const value = errorMessage(error) || type;
-    const frames = parseStack(error && typeof error === "object" ? (error as { stack?: unknown }).stack : undefined);
+    const entries = causeChain(error);
+    const { type, value, frames } = entries[0]!;
     const code = errorCode(error);
-    const key = `${type}|${value}|${code ?? ""}|${frames.at(-1)?.function ?? ""}`;
+    const causes = entries.slice(1).map((e) => `${e.type}|${e.value}`).join("|");
+    const key = `${type}|${value}|${code ?? ""}|${frames.at(-1)?.function ?? ""}|${causes}`;
     if (seen.has(key) || seen.size >= MAX_PER_SESSION) return;
     seen.add(key);
     capture(
       "$exception",
       { $exception_level: fatal ? "fatal" : "error", source: mechanism, error_code: code },
       consent === undefined ? consentNow() : consent,
-      { urgent: true, persist: true, raw: exceptionProperties([{ type, value, frames }], mechanism, handled) },
+      { urgent: true, persist: true, raw: exceptionProperties(entries, mechanism, handled) },
     );
   } catch {}
 }
