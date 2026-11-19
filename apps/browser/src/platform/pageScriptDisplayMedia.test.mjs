@@ -353,3 +353,43 @@ test("a share without a controller tells the shell so, and the controller patch 
   p.restore();
   assert.equal(world.CaptureController.prototype.getSupportedZoomLevels, native);
 });
+
+test("a controller that isn't a CaptureController goes to Chrome, which refuses it, and a controller shares only once", async () => {
+  const world = captureWorld();
+  const p = page({ active: true, window: world.window });
+  void p.devices.getDisplayMedia({ video: true, controller: {} }).catch(() => {});
+  assert.deepEqual(p.nativeCalls, [p.devices]);
+  assert.deepEqual(p.sent, []);
+  const controller = new world.CaptureController();
+  void p.devices.getDisplayMedia({ video: true, controller });
+  assert.equal(p.sent.length, 1);
+  assert.equal(await rejection(p.devices.getDisplayMedia({ video: true, controller })), "InvalidStateError: A CaptureController object may only be used with a single getDisplayMedia() invocation.");
+  assert.equal(p.sent.length, 1);
+});
+
+test("the controller is read once, and a site's wrapper of getDisplayMedia doesn't keep the controller patch after the picker is turned off", async () => {
+  const world = captureWorld();
+  const native = world.CaptureController.prototype.getSupportedZoomLevels;
+  const videoTrack = world.track("browser");
+  const p = page({ active: true, window: world.window, stream: world.streamOf(videoTrack) });
+  const controller = new world.CaptureController();
+  let reads = 0;
+  const options = {
+    video: true,
+    get controller() {
+      if (reads++) throw new Error("read twice");
+      return controller;
+    },
+  };
+  const pending = p.shim.call(p.devices, options);
+  p.handlers.displayMedia({ id: p.sent.at(-1).data.id, sourceId: "browser:1", audio: false });
+  await pending;
+  assert.equal(reads, 1);
+  assert.deepEqual(controller.getSupportedZoomLevels(), []);
+  const shim = p.proto.getDisplayMedia;
+  p.proto.getDisplayMedia = function wrapped(...args) {
+    return shim.apply(this, args);
+  };
+  p.restore();
+  assert.equal(world.CaptureController.prototype.getSupportedZoomLevels, native);
+});
