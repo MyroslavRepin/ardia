@@ -16,7 +16,7 @@ const gate = slice("  const web = ", "  const isTop = ");
 const illegal = "Failed to execute 'getDisplayMedia' on 'MediaDevices': Illegal invocation";
 const badOptions = "Failed to execute 'getDisplayMedia' on 'MediaDevices': The provided value is not of type 'DisplayMediaStreamOptions'.";
 
-function page({ active = false, policyAllows = true } = {}) {
+function page({ active = false, policyAllows = true, window = {}, stream = null } = {}) {
   const sent = [];
   const nativeCalls = [];
   const real = new WeakSet();
@@ -37,7 +37,7 @@ function page({ active = false, policyAllows = true } = {}) {
     enumerable: true,
     configurable: true,
   });
-  Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value() {}, writable: true, enumerable: true, configurable: true });
+  Object.defineProperty(MediaDevices.prototype, "getUserMedia", { value: () => Promise.resolve(stream), writable: true, enumerable: true, configurable: true });
   Object.defineProperty(MediaDevices.prototype, "ondevicechange", {
     get() {
       if (!real.has(this)) throw new TypeError("Illegal invocation");
@@ -59,6 +59,7 @@ function page({ active = false, policyAllows = true } = {}) {
   const document = { featurePolicy: { allowsFeature: () => policyAllows } };
   const handlers = Object.create(null);
   const install = new Function(
+    "window",
     "navigator",
     "document",
     "send",
@@ -66,7 +67,7 @@ function page({ active = false, policyAllows = true } = {}) {
     "handlers",
     "DOMException",
     `${helper}${source}return { installDisplayMedia, restoreDisplayMedia };`,
-  )(navigator, document, (kind, data) => sent.push({ kind, data }), Reflect.apply, handlers, DOMException);
+  )(window, navigator, document, (kind, data) => sent.push({ kind, data }), Reflect.apply, handlers, DOMException);
   return {
     devices,
     otherWindowDevices,
@@ -77,6 +78,7 @@ function page({ active = false, policyAllows = true } = {}) {
     nativeCalls,
     install: install.installDisplayMedia,
     restore: install.restoreDisplayMedia,
+    handlers,
   };
 }
 
@@ -150,7 +152,7 @@ test("a page's own request without a click is refused; with a click it opens the
   assert.deepEqual(quiet.sent, []);
   const clicked = page({ active: true });
   clicked.devices.getDisplayMedia({ video: true, audio: true });
-  assert.deepEqual(clicked.sent, [{ kind: "displayMedia", data: { id: 1, audio: true, systemAudio: true, windowAudio: "system" } }]);
+  assert.deepEqual(clicked.sent, [{ kind: "displayMedia", data: { id: 1, audio: true, systemAudio: true, windowAudio: "system", controller: false } }]);
   assert.deepEqual(clicked.nativeCalls, []);
 });
 
@@ -235,6 +237,7 @@ function blankFrame() {
       } catch (e) {}
     };
   const receive = new Function(
+    "window",
     "navigator",
     "document",
     "send",
@@ -245,7 +248,7 @@ function blankFrame() {
     "guard",
     "fromJSON",
     `${helper}${source}${blankFrameTail}return null;`,
-  )(navigator, { featurePolicy: { allowsFeature: () => true } }, (kind, data) => sent.push({ kind, data }), Reflect.apply, Object.create(null), DOMException, false, guard, JSON.parse);
+  )({}, navigator, { featurePolicy: { allowsFeature: () => true } }, (kind, data) => sent.push({ kind, data }), Reflect.apply, Object.create(null), DOMException, false, guard, JSON.parse);
   return { receive, devices, proto: MediaDevices.prototype, native: nativeGetDisplayMedia, sent, nativeCalls };
 }
 
@@ -263,4 +266,90 @@ test("a blank or srcdoc frame asks Ardia for its display-media config, and with 
   f.devices.getDisplayMedia({ video: true });
   assert.equal(f.sent[1].kind, "displayMedia");
   assert.equal(f.nativeCalls.length, 1);
+});
+
+function captureWorld() {
+  const notCapturing = "Failed to execute 'getSupportedZoomLevels' on 'CaptureController': Not actively capturing.";
+  class CaptureController {}
+  Object.defineProperty(CaptureController.prototype, "getSupportedZoomLevels", {
+    value: {
+      getSupportedZoomLevels() {
+        throw new DOMException(notCapturing, "InvalidStateError");
+      },
+    }.getSupportedZoomLevels,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const states = new WeakMap();
+  class MediaStreamTrack {
+    get readyState() {
+      return states.get(this).readyState;
+    }
+    getSettings() {
+      return { displaySurface: states.get(this).surface };
+    }
+  }
+  const track = (surface) => {
+    const t = new MediaStreamTrack();
+    states.set(t, { readyState: "live", surface });
+    return t;
+  };
+  const end = (t) => (states.get(t).readyState = "ended");
+  const tracks = new WeakMap();
+  class MediaStream {
+    getVideoTracks() {
+      return tracks.get(this);
+    }
+  }
+  const streamOf = (videoTrack) => {
+    const s = new MediaStream();
+    tracks.set(s, [videoTrack]);
+    return s;
+  };
+  return { window: { CaptureController, MediaStreamTrack, MediaStream }, CaptureController, track, end, streamOf, notCapturing };
+}
+
+async function share(world, surface, options) {
+  const videoTrack = world.track(surface);
+  const p = page({ active: true, window: world.window, stream: world.streamOf(videoTrack) });
+  const pending = p.shim.call(p.devices, options);
+  const request = p.sent.at(-1);
+  p.handlers.displayMedia({ id: request.data.id, sourceId: `${surface}:1`, audio: false });
+  await pending;
+  return { p, videoTrack, request };
+}
+
+test("a site's CaptureController answers for the tab it shares, as Chrome's does, so Meet shows its presenter preview (#2146)", async () => {
+  const world = captureWorld();
+  const controller = new world.CaptureController();
+  assert.throws(() => controller.getSupportedZoomLevels(), { name: "InvalidStateError", message: world.notCapturing });
+  const { videoTrack, request } = await share(world, "browser", { video: true, controller });
+  assert.equal(request.data.controller, true);
+  assert.deepEqual(controller.getSupportedZoomLevels(), []);
+  world.end(videoTrack);
+  assert.throws(() => controller.getSupportedZoomLevels(), { name: "InvalidStateError" }, "an ended share is no longer capturing");
+  assert.throws(() => new world.CaptureController().getSupportedZoomLevels(), { name: "InvalidStateError" }, "a controller never used to share isn't capturing");
+});
+
+test("a CaptureController sharing a window or screen says zoom isn't supported there, as Chrome's does", async () => {
+  for (const surface of ["window", "monitor"]) {
+    const world = captureWorld();
+    const controller = new world.CaptureController();
+    await share(world, surface, { video: true, controller });
+    assert.throws(() => controller.getSupportedZoomLevels(), { name: "NotSupportedError" });
+  }
+});
+
+test("a share without a controller tells the shell so, and the controller patch looks native and leaves with the shim", async () => {
+  const world = captureWorld();
+  const native = world.CaptureController.prototype.getSupportedZoomLevels;
+  const { p, request } = await share(world, "browser", { video: true });
+  assert.equal(request.data.controller, false);
+  const patched = world.CaptureController.prototype.getSupportedZoomLevels;
+  assert.notEqual(patched, native);
+  assert.equal(patched.name, "getSupportedZoomLevels");
+  assert.match(Function.prototype.toString.call(patched), /^function (getSupportedZoomLevels)?\(\) \{ \[native code\] \}$/);
+  p.restore();
+  assert.equal(world.CaptureController.prototype.getSupportedZoomLevels, native);
 });
