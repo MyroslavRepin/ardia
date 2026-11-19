@@ -25,7 +25,7 @@ import { spaceToShow, tabsInSpace } from "../tabs/spaces";
 import { currentPreferences, loadPreferences } from "../settings/store";
 import type { VisitTransition, Visit } from "../store/browserDatabase";
 import { enterTarget, rowTarget, resolve, type TrayRow } from "../search/omnibox";
-import { applySearchEngine, dismissSearch, presentSearch, refreshSearchRows, searchState, useSearch, withdrawPasteOffer } from "../search/store";
+import { applySearchEngine, dismissSearch, presentSearch, refreshSearchRows, searchState, useSearch, beginPasteRead, endPasteRead } from "../search/store";
 import {
   archiveDueTabs,
   loadArchive,
@@ -176,11 +176,13 @@ export function activateRow(row: TrayRow) {
     return;
   }
   if (row.kind === "paste") {
+    const session = beginPasteRead();
+    if (session === null) return;
+    const startedIncognito = useTabs.getState().incognito;
     void settled(() => pasteForGo(), "").then((pasted) => {
       const tap = pasteTap(row.offer, pasted);
-      if (!useTabs.getState().incognito) countUsage(tap.count);
-      if (tap.go) submitSearch(tap.go);
-      else withdrawPasteOffer();
+      if (!startedIncognito && !useTabs.getState().incognito) countUsage(tap.count);
+      if (endPasteRead(session, tap.go !== null) && tap.go) submitSearch(tap.go);
     });
     return;
   }

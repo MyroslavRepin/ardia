@@ -23,7 +23,7 @@ enum PasteboardOffers {
   }
 }
 
-public final class ClipboardModule: Module {
+public final class PhoneClipboardModule: Module {
   public func definition() -> ModuleDefinition {
     Name("ArdiaPhoneClipboard")
 

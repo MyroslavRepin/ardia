@@ -56,6 +56,8 @@ let inFlight: AbortController | null = null;
 let fedSources = "";
 let context: SuggestContext = { currentUrl: null, currentTabId: null };
 let paste: PasteOffer | null = null;
+let pasteAsked = 0;
+let pasteReadIn: number | null = null;
 
 export function feedSources() {
   const key = `${sourcesKey(useTabs.getState().listing, history().revision(), syncData().revision)}:${useTabs.getState().spaces.current}`;
@@ -81,19 +83,32 @@ function rowsFor(text: string, remoteValues: readonly string[]): TrayRow[] {
 }
 
 function offerPaste(session: number) {
-  paste = null;
+  const asked = ++pasteAsked;
   void settled(() => clipboardOffer(), null).then((offer) => {
     const state = useSearch.getState();
-    if (!offer || !state.open || state.session !== session) return;
+    if (!offer || asked !== pasteAsked || !state.open || state.session !== session) return;
     paste = offer;
     if (!state.text.trim()) useSearch.setState({ rows: rowsFor(state.text, []) });
   });
 }
 
-export function withdrawPasteOffer() {
-  paste = null;
+export function beginPasteRead(): number | null {
+  const { open, session } = useSearch.getState();
+  if (!open || pasteReadIn === session) return null;
+  pasteReadIn = session;
+  return session;
+}
+
+export function endPasteRead(session: number, pasted: boolean): boolean {
+  if (pasteReadIn === session) pasteReadIn = null;
   const state = useSearch.getState();
-  if (state.open && !state.text.trim()) useSearch.setState({ rows: rowsFor(state.text, []) });
+  if (!state.open || state.session !== session) return false;
+  if (!pasted) {
+    paste = null;
+    pasteAsked++;
+    if (!state.text.trim()) useSearch.setState({ rows: rowsFor(state.text, []) });
+  }
+  return true;
 }
 
 export const refreshSearchRows = () => useSearch.setState((state) => ({ rows: rowsFor(state.text, []) }));
@@ -109,6 +124,7 @@ export function presentSearch(origin: SearchOrigin, text = "", incognitoOnCancel
   inFlight?.abort();
   remote = { text: "", values: [] };
   context = page ?? { currentUrl: null, currentTabId: null };
+  paste = null;
   feedSources();
   useSearch.setState((state) => ({
     open: true,
