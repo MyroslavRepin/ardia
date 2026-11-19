@@ -1,14 +1,16 @@
-import { cancelDownload, keepDownload, pauseDownload, resumeDownload, type Download } from "../../state/downloads/actions";
+import { cancelDownload, contentNameToggle, keepDownload, pauseDownload, resumeDownload, toggleContentName, type Download } from "../../state/downloads/actions";
 import { revealFile } from "../../state/app/system";
 import { openDownload } from "../../state/downloads/openDownload";
 import { useState } from "react";
 import { FlatList, Pressable, View } from "react-native";
 import { useShallow } from "zustand/react/shallow";
 import { useDownloads, useTab } from "../../state/browser/hooks";
-import { useDownload } from "../../state/downloads/hooks";
+import { useContentName, useDownload, useNamingByContent } from "../../state/downloads/hooks";
+import { NAME_SWITCH_TITLES } from "../../state/downloads/downloadMenu";
+import { ContentNameText } from "../downloads/ContentNameText";
 import { clearDownloads, removeDownload } from "../../state/windows/actions";
 import { openUrl } from "../../state/bookmarks/actions";
-import { FileIcon } from "../downloads/Downloads";
+import { FileIcon, FINDING_A_NAME } from "../downloads/Downloads";
 import { useDownloadView } from "../downloads/useDownloadView";
 import { downloadMenu } from "../../state/downloads/downloadMenu";
 import { downloadStatus } from "../../state/downloads/status";
@@ -59,6 +61,9 @@ function DownloadCard({ d: listed, windowId }: { d: Download; windowId: string }
   const d = useDownload(listed.id) ?? listed;
   const { hovered, hoverProps } = useHover();
   const { exists, done, progress, blocked } = useDownloadView(d);
+  const naming = useNamingByContent(d.id);
+  const contentName = useContentName(d.id);
+  const nameSwitch = exists ? contentNameToggle(d, contentName) : null;
   return (
     <View {...hoverProps} style={CARD_WIDTH}>
       <MouseArea path={done ? d.path : null}>
@@ -68,14 +73,19 @@ function DownloadCard({ d: listed, windowId }: { d: Download; windowId: string }
           </View>
           <View style={CARD_TEXT}>
             <Pressable disabled={!done} onPress={() => void openDownload(d.path)}>
-              <Text
-                lines={1}
-                weight="medium"
-                tone={exists ? "textPrimary" : "textSecondary"}
-                style={{ ...pageType.fileName, textDecorationLine: exists ? "none" : "line-through" }}
-              >
-                {d.filename || "Preparing…"}
-              </Text>
+              <ContentNameText name={d.filename || "Preparing…"} thinking={naming} renames={d.state === "finished"}>
+                {(text, paint) => (
+                  <Text
+                    lines={1}
+                    ellipsizeMode="middle"
+                    weight="medium"
+                    tone={paint === "lit" ? "textPrimary" : exists && !naming ? "textPrimary" : "textSecondary"}
+                    style={{ ...pageType.fileName, textDecorationLine: exists ? "none" : "line-through" }}
+                  >
+                    {text}
+                  </Text>
+                )}
+              </ContentNameText>
             </Pressable>
             <Pressable onPress={() => openUrl(d.url, windowId, "foreground")}>
               <Text lines={1} size="small" tone="textTertiary">
@@ -91,7 +101,7 @@ function DownloadCard({ d: listed, windowId }: { d: Download; windowId: string }
               />
             )}
             <Text lines={1} size="small" tone={blocked ? "destructive" : "textSecondary"}>
-              {downloadStatus(d, exists)}
+              {naming ? FINDING_A_NAME : downloadStatus(d, exists)}
             </Text>
           </View>
           {blocked ? (
@@ -105,7 +115,18 @@ function DownloadCard({ d: listed, windowId }: { d: Download; windowId: string }
               <Button title="Cancel" onPress={() => void cancelDownload(d.id)} />
             </View>
           ) : done ? (
-            <Button title={`Show in ${PLATFORM_TERMS.fileManager}`} onPress={() => void revealFile(d.path)} />
+            <View style={ROW_BUTTONS}>
+              {nameSwitch ? (
+                <Button
+                  variant="icon"
+                  icon={nameSwitch === "original" ? "arrow.uturn.backward" : "arrow.uturn.forward"}
+                  size="l"
+                  onPress={() => void toggleContentName(d.id)}
+                  tooltip={NAME_SWITCH_TITLES[nameSwitch]}
+                />
+              ) : null}
+              <Button title={`Show in ${PLATFORM_TERMS.fileManager}`} onPress={() => void revealFile(d.path)} />
+            </View>
           ) : null}
           <Button variant="icon" icon="ellipsis" size="l" onPress={() => void downloadMenu(d, windowId)} tooltip="More actions" />
           {d.state !== "downloading" && (

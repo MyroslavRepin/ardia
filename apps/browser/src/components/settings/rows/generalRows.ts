@@ -3,6 +3,7 @@ import type { SettingsPane } from "../../../state/settings/settingsWindows";
 import { keyText } from "../../../state/commands/keyText";
 import { PLATFORM_FEATURES } from "../../../lib/platformFeatures";
 import { PLATFORM_TERMS } from "../../../lib/platformTerms";
+import { contentNamerOffered } from "../../../state/downloads/contentNames";
 
 const inSidebar = (_: unknown, env: SettingsEnv) => !env.top;
 const syncOn = (_: unknown, env: SettingsEnv) => !!env.syncOn;
@@ -57,6 +58,12 @@ export const generalRows = {
         askWhereToSave: {
           title: "Ask where to save each file",
           keywords: ["download location", "save as", "prompt", "choose folder"],
+        },
+        nameDownloadsByContent: {
+          title: "Name downloads by what's in them",
+          description: "Apple Intelligence reads each finished file on this Mac and renames it, like 2026-11-19_invoice_acme-hosting.pdf. Nothing leaves your Mac.",
+          keywords: ["rename", "file names", "smart names", "ai", "apple intelligence", "organize downloads", "on device"],
+          shown: () => contentNamerOffered(),
         },
       },
     },

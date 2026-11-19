@@ -63,3 +63,17 @@ export const MAGNET = {
   sidebarTarget: { right: 24 },
   closedTarget: { x: 24, y: 24 },
 } as const;
+
+export const CONTENT_NAME_MOTION = {
+  sweepMs: 1300,
+  restMs: 350,
+  pulseOpacity: 0.6,
+  bands: [
+    { width: 72, opacity: 0.45 },
+    { width: 36, opacity: 1 },
+  ],
+  morphMs: 380,
+  morphLift: 5,
+  leaveShare: 0.55,
+  enterDelayShare: 0.2,
+} as const;

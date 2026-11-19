@@ -1,4 +1,4 @@
-import { cancelDownload, keepDownload, pauseDownload, resumeDownload, type Download } from "../../state/downloads/actions";
+import { cancelDownload, contentNameToggle, keepDownload, pauseDownload, resumeDownload, toggleContentName, type Download } from "../../state/downloads/actions";
 import {
   ContextMenuArea,
   MouseArea,
@@ -33,7 +33,9 @@ import { useShallow } from "zustand/react/shallow";
 import { useDownloads, useSidebarOpen, useSidebarSide, useWindowId, useWindowUi } from "../../state/browser/hooks";
 import { clearDownloads, dismissDownloadsByPress, setDownloadsOpen } from "../../state/windows/actions";
 import { watchNewDownloads } from "../../state/windows/downloadWatch";
-import { useDownload } from "../../state/downloads/hooks";
+import { useContentName, useDownload, useNamingByContent } from "../../state/downloads/hooks";
+import { NAME_SWITCH_TITLES } from "../../state/downloads/downloadMenu";
+import { ContentNameText } from "./ContentNameText";
 import { useDownloadsInSidebarFooter, useTabLayout, useToolbarLightsCenter } from "../../state/windows/layout";
 import { SIDEBAR_FOOTER_DOWNLOADS } from "../sidebar/geometry";
 import { PROFILE_DOTS_HEIGHT } from "../profiles/ProfileDots";
@@ -201,6 +203,9 @@ function DownloadRow({ d, windowId }: { d: Download; windowId: string }) {
   const theme = useTheme();
   const { hovered, hoverProps } = useHover();
   const { exists, done, progress, blocked } = useDownloadView(d);
+  const naming = useNamingByContent(d.id);
+  const contentName = useContentName(d.id);
+  const nameSwitch = exists ? contentNameToggle(d, contentName) : null;
   const glass = useGlass();
   return (
     <View {...hoverProps}>
@@ -224,18 +229,23 @@ function DownloadRow({ d, windowId }: { d: Download; windowId: string }) {
                   <FileIcon path={d.path || d.filename} size={L.fileIcon} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text
-                    lines={1}
-                    tone={exists ? "textPrimary" : "textSecondary"}
-                    style={{ lineHeight: PANEL.titleLine, textDecorationLine: exists ? "none" : "line-through" }}
-                  >
-                    {d.filename || "Preparing…"}
-                  </Text>
+                  <ContentNameText name={d.filename || "Preparing…"} thinking={naming} renames={d.state === "finished"}>
+                    {(text, paint) => (
+                      <Text
+                        lines={1}
+                        ellipsizeMode="middle"
+                        tone={paint === "lit" ? "textPrimary" : exists && !naming ? "textPrimary" : "textSecondary"}
+                        style={{ lineHeight: PANEL.titleLine, textDecorationLine: exists ? "none" : "line-through" }}
+                      >
+                        {text}
+                      </Text>
+                    )}
+                  </ContentNameText>
                   {d.state === "downloading" && !blocked ? (
                     <ProgressTrack value={Math.max(progress, L.progressMin)} height={L.progressHeight} tone={d.paused ? "textTertiary" : "accent"} style={PROGRESS_GAP} />
                   ) : null}
                   <Text lines={1} size="caption" tone={blocked ? "destructive" : "textSecondary"} style={{ lineHeight: PANEL.subtitleLine }}>
-                    {blocked ? dangerWarning(d, true) : downloadStatus(d, exists)}
+                    {blocked ? dangerWarning(d, true) : naming ? FINDING_A_NAME : downloadStatus(d, exists)}
                   </Text>
                 </View>
                 {blocked ? (
@@ -255,9 +265,20 @@ function DownloadRow({ d, windowId }: { d: Download; windowId: string }) {
                 ) : done ? (
                   <HoverSlot
                     hovered={hovered}
-                    width={L.rowButton}
+                    width={L.rowButton * (nameSwitch ? 2 : 1)}
                     style={{ marginRight: -L.rowButtonBearing }}
-                    hover={<RowButton icon="magnifyingglass.circle.fill" onPress={() => void revealFile(d.path)} tooltip={`Show in ${PLATFORM_TERMS.fileManager}`} />}
+                    hover={
+                      <>
+                        {nameSwitch ? (
+                          <RowButton
+                            icon={nameSwitch === "original" ? "arrow.uturn.backward.circle.fill" : "arrow.uturn.forward.circle.fill"}
+                            onPress={() => void toggleContentName(d.id)}
+                            tooltip={NAME_SWITCH_TITLES[nameSwitch]}
+                          />
+                        ) : null}
+                        <RowButton icon="magnifyingglass.circle.fill" onPress={() => void revealFile(d.path)} tooltip={`Show in ${PLATFORM_TERMS.fileManager}`} />
+                      </>
+                    }
                   />
                 ) : null}
               </View>
@@ -335,3 +356,5 @@ function DownloadsRowGlass({ fill, pressed }: { fill: string | undefined; presse
 }
 
 const PROGRESS_GAP = { marginTop: L.progressAbove, marginBottom: L.progressBelow } as const;
+
+export const FINDING_A_NAME = "Finding a name…";

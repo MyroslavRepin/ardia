@@ -19,3 +19,11 @@ export type Download = {
 };
 
 export type DownloadSettings = { folder: string; askWhereToSave: boolean; managed: boolean };
+
+export type DownloadRenameResult = "ok" | "conflict" | "tooLong" | "invalid" | "unavailable" | "failed";
+
+export type DownloadNameSuggestion =
+  | { status: "ok"; category: string; title: string; date: string }
+  | { status: "unavailable" | "unreadable" | "failed" };
+
+export type DownloadNamerStatus = "available" | "unavailable" | "unsupported";

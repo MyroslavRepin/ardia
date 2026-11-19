@@ -9,8 +9,11 @@ import { opensWhenDone, toggleOpenWhenDone } from "../windows/downloadWatch";
 import { cancelDownload, keepDownload, pauseDownload, resumeDownload, type Download } from "./actions";
 import { PLATFORM_TERMS } from "../../lib/platformTerms";
 import { awaitsKeep } from "./status";
+import { contentNameToggle, toggleContentName, useContentNames } from "./contentNames";
 
-export type DownloadMenuState = { held: boolean; downloading: boolean; paused: boolean; opensWhenDone: boolean; fileExists: boolean };
+export type DownloadMenuState = { held: boolean; downloading: boolean; paused: boolean; opensWhenDone: boolean; fileExists: boolean; nameSwitch?: "original" | "named" | null };
+
+export const NAME_SWITCH_TITLES = { original: "Use Original Name", named: "Use Suggested Name" } as const;
 
 export function downloadMenuItems(d: DownloadMenuState): MenuItem[] {
   const lead: MenuItem[] = d.held
@@ -27,6 +30,7 @@ export function downloadMenuItems(d: DownloadMenuState): MenuItem[] {
       : [
           { id: "open", title: "Open", symbol: "arrow.up.forward.app", enabled: d.fileExists },
           { id: "reveal", title: `Show in ${PLATFORM_TERMS.fileManager}`, symbol: "folder", enabled: d.fileExists },
+          ...(d.nameSwitch && d.fileExists ? [{ id: "contentName", title: NAME_SWITCH_TITLES[d.nameSwitch], symbol: d.nameSwitch === "original" ? "arrow.uturn.backward" : "arrow.uturn.forward" }] : []),
         ];
   return menuSections(
     lead,
@@ -44,7 +48,14 @@ export function downloadMenuItems(d: DownloadMenuState): MenuItem[] {
 export async function downloadMenu(d: Download, windowId: string) {
   const exists = d.state === "finished" && fileExists(d.path);
   const choice = await showMenu(
-    downloadMenuItems({ held: awaitsKeep(d), downloading: d.state === "downloading", paused: d.paused, opensWhenDone: opensWhenDone(d.id), fileExists: exists }),
+    downloadMenuItems({
+      held: awaitsKeep(d),
+      downloading: d.state === "downloading",
+      paused: d.paused,
+      opensWhenDone: opensWhenDone(d.id),
+      fileExists: exists,
+      nameSwitch: contentNameToggle(d, useContentNames.getState().names[d.id]),
+    }),
   );
   if (choice === "whenDone") toggleOpenWhenDone(d.id);
   if (choice === "pause") void pauseDownload(d.id);
@@ -53,6 +64,7 @@ export async function downloadMenu(d: Download, windowId: string) {
   if (choice === "cancel") void cancelDownload(d.id);
   if (choice === "open") void openDownload(d.path);
   if (choice === "reveal") void revealFile(d.path);
+  if (choice === "contentName") void toggleContentName(d.id);
   if (choice === "copy") copyText(d.url);
   if (choice === "page") openInternalPage("downloads", windowId);
   if (choice === "trash") void trashDownload(d);

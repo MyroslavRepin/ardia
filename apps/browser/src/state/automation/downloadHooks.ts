@@ -70,6 +70,12 @@ export async function settleFinishedDownload(d: Download): Promise<MoveResult | 
 
 let started = false;
 const inProgress = new Set<string>();
+const settling = new Map<string, Promise<MoveResult | null>>();
+
+export async function downloadSettled(id: string): Promise<MoveResult | null> {
+  await Promise.resolve();
+  return (await settling.get(id)) ?? null;
+}
 const IN_PROGRESS_CAP = 500;
 
 export function noteDownloadEvent(d: Download) {
@@ -79,7 +85,10 @@ export function noteDownloadEvent(d: Download) {
     return;
   }
   if (!inProgress.delete(d.id)) return;
-  if (d.state === "finished") void settleFinishedDownload(d);
+  if (d.state !== "finished") return;
+  const settled = settleFinishedDownload(d);
+  settling.set(d.id, settled);
+  void settled.finally(() => settling.delete(d.id));
 }
 
 export function startDownloadHooks(next: DownloadMover) {
@@ -95,5 +104,6 @@ export function resetDownloadHooksForTests() {
   mover = null;
   handled.clear();
   inProgress.clear();
+  settling.clear();
   lastApproved = null;
 }

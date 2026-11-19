@@ -79,6 +79,9 @@ For the architecture and the test tooling, read `docs/agent-brief.md`.
   code. AI ships as a first-party plugin on the plugin host (#2462, #2463), off until the user enables it, and
   whatever it needs from the browser becomes a public extension point any plugin can use, never a private hook.
   Dia's AI rows in `docs/dia-feature-parity.md` stay ⏸ until the plugin ships them.
+  One exception in the base app, the owner's call on 2026-11-19: naming finished downloads by their content
+  (`docs/download-content-names.md`). It runs only on macOS 26+ with Apple's on-device Foundation Models, is off until
+  the user turns it on, and nothing it reads leaves the Mac.
   The phone app has two exceptions, documented in `docs/phone.md`. Browse for Me uses the phone's model, cited
   excerpts, or the user's connected ChatGPT plan. Pinch to Summarize reads the open page. iPhone uses Apple
   Intelligence or excerpts on-device. Android uses Gemini Nano or excerpts on-device by default, and can use

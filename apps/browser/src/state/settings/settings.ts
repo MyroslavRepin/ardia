@@ -67,6 +67,7 @@ export const SETTING_SPECS = {
   warnBeforeClosingWindow: flag(true, SYNCED),
   restoreSession: flag(true),
   separateDownloadFolders: flag(false),
+  nameDownloadsByContent: flag(false),
   searchEngine: text("google", SYNCED),
   customSearchUrl: text("", SYNCED),
   customSearchEngines: shaped<CustomSearchEngine[]>([], (v) => Array.isArray(v) && v.every((e) => hasStrings(e, ["id", "name", "keyword", "url"])), engineRecords(["id", "name", "keyword", "url"]), SYNCED),

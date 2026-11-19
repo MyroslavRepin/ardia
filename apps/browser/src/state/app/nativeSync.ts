@@ -1,5 +1,6 @@
 import { lastTabClosesWindow, onWindowRequest } from "../../platform/tabs";
 import { onDownload } from "../../platform/downloads";
+import { startContentNames } from "../downloads/contentNames";
 import { releaseProfile } from "../../platform/profiles";
 import { closeWindow, onWindowEvent, openWindow, restoreFullScreen, setTrafficLightsCenter, setWindowTitle, windowIds } from "../../platform/windows";
 import { isDarkAppearance, onAppEvent, onOpenURLs, replyToTerminate } from "../../platform/app";
@@ -70,6 +71,7 @@ export function startNativeSync() {
     .catch(() => true)
     .then((closes) => setLastTabKeepsWindow(!closes));
   onDownload((d) => store.getState().upsertDownload(d));
+  startContentNames();
 
   store.getState().setAppDark(Appearance.getColorScheme() === "dark");
   startNativeSettings();

@@ -61,8 +61,8 @@ export function startDevHarness() {
   const ac = {
     store: useBrowser, actions, runCommand, webviews, shell, engine: { call, on }, omnibox: omniboxDrivers, pages: pagesDrivers,
     pageState: usePages,
-    get downloads(): typeof import("../../state/downloads/progress") {
-      return require("../../state/downloads/progress");
+    get downloads(): typeof import("../../state/downloads/progress") & typeof import("../../state/downloads/contentNames") {
+      return { ...require("../../state/downloads/progress"), ...require("../../state/downloads/contentNames") };
     },
     openSettings,
     favicons,

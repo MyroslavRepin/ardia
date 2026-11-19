@@ -132,6 +132,7 @@ const homeRelative = (path: string) => path.replace(/^\/Users\/[^/]+(?=\/|$)/, "
 
 function DownloadsSection() {
   const separate = useSettings((s) => s.separateDownloadFolders);
+  const byContent = useSettings((s) => s.nameDownloadsByContent);
   const defaultProfileId = useSettings((s) => s.defaultProfileId);
   const profiles = useProfiles();
   const profile = currentEngineProfile(defaultProfileId);
@@ -172,6 +173,9 @@ function DownloadsSection() {
         </Row>
         <Row anchor="general.askWhereToSave">
           <Toggle value={current?.askWhereToSave ?? false} disabled={locked} onChange={(v) => apply({ askWhereToSave: v })} />
+        </Row>
+        <Row anchor="general.nameDownloadsByContent">
+          <Toggle value={byContent} accessibilityLabel="Name downloads by what's in them" onChange={(on) => updateSettings({ nameDownloadsByContent: on })} />
         </Row>
       </Group>
     </>

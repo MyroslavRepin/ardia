@@ -8,7 +8,7 @@ import type {
 } from "../extensions";
 import type { HistoryChangedBatch, HistoryWireRow } from "../history";
 import type { FaviconImage } from "../favicons";
-import type { Download, DownloadSettings } from "../downloads";
+import type { Download, DownloadNamerStatus, DownloadNameSuggestion, DownloadRenameResult, DownloadSettings } from "../downloads";
 import type {
   BatterySaverMode, BatterySaverState, CliControlStatus, CursorRestore, CliTabTarget, EngineComponent, EngineInfo, EngineTask, HoverLostEpisode, MemorySaverRequest, PressLoopLongReport, MemorySaverState, PopupProtectedMedia, SystemState, WindowUnpaintedRecord,
 } from "../engineDomain";
@@ -69,6 +69,9 @@ export type EngineCalls = {
   "downloads.pause": [{ id: string }, null];
   "downloads.resume": [{ id: string }, null];
   "downloads.keep": [{ id: string }, null];
+  "downloads.rename": [{ id: string; name: string }, DownloadRenameResult];
+  "downloads.suggestName": [{ path: string; filename: string }, DownloadNameSuggestion];
+  "downloads.namerStatus": [{}, DownloadNamerStatus];
   "downloads.settings": [Profile, DownloadSettings];
   "downloads.setSettings": [Profile & Partial<Pick<DownloadSettings, "folder" | "askWhereToSave">>, DownloadSettings];
 
