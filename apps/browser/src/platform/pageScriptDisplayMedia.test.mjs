@@ -270,10 +270,16 @@ test("a blank or srcdoc frame asks Ardia for its display-media config, and with 
 
 function captureWorld() {
   const notCapturing = "Failed to execute 'getSupportedZoomLevels' on 'CaptureController': Not actively capturing.";
-  class CaptureController {}
+  const branded = new WeakSet();
+  class CaptureController {
+    constructor() {
+      branded.add(this);
+    }
+  }
   Object.defineProperty(CaptureController.prototype, "getSupportedZoomLevels", {
     value: {
       getSupportedZoomLevels() {
+        if (!branded.has(this)) throw new TypeError("Illegal invocation");
         throw new DOMException(notCapturing, "InvalidStateError");
       },
     }.getSupportedZoomLevels,
@@ -354,12 +360,22 @@ test("a share without a controller tells the shell so, and the controller patch 
   assert.equal(world.CaptureController.prototype.getSupportedZoomLevels, native);
 });
 
-test("a controller that isn't a CaptureController goes to Chrome, which refuses it, and a controller shares only once", async () => {
+test("a controller that isn't a real CaptureController is refused as Chrome refuses it, and a controller shares only once", async () => {
   const world = captureWorld();
   const p = page({ active: true, window: world.window });
-  void p.devices.getDisplayMedia({ video: true, controller: {} }).catch(() => {});
-  assert.deepEqual(p.nativeCalls, [p.devices]);
+  const refusal = "TypeError: Failed to execute 'getDisplayMedia' on 'MediaDevices': Failed to read the 'controller' property from 'DisplayMediaStreamOptions': Failed to convert value to 'CaptureController'.";
+  assert.equal(await rejection(p.devices.getDisplayMedia({ video: true, controller: {} })), refusal);
+  assert.equal(await rejection(p.devices.getDisplayMedia({ video: true, controller: Object.create(world.CaptureController.prototype) })), refusal);
+  const revoked = Proxy.revocable({}, {});
+  revoked.revoke();
+  assert.equal(await rejection(p.devices.getDisplayMedia({ video: true, controller: revoked.proxy })), refusal);
+  assert.deepEqual(p.nativeCalls, []);
   assert.deepEqual(p.sent, []);
+  const callable = Object.assign(() => {}, { video: true, controller: new world.CaptureController() });
+  void p.devices.getDisplayMedia(callable);
+  assert.equal(p.sent.at(-1).data.controller, true);
+  assert.equal(await rejection(p.devices.getDisplayMedia(callable)), "InvalidStateError: A CaptureController object may only be used with a single getDisplayMedia() invocation.");
+  p.sent.length = 0;
   const controller = new world.CaptureController();
   void p.devices.getDisplayMedia({ video: true, controller });
   assert.equal(p.sent.length, 1);
@@ -392,4 +408,6 @@ test("the controller is read once, and a site's wrapper of getDisplayMedia doesn
   };
   p.restore();
   assert.equal(world.CaptureController.prototype.getSupportedZoomLevels, native);
+  p.install();
+  assert.notEqual(world.CaptureController.prototype.getSupportedZoomLevels, native, "turning the picker back on patches the controller again, wrapper or not");
 });

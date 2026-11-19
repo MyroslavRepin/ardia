@@ -76,7 +76,7 @@
     const readyStateOf = readyState && readyState.get;
     const settingsOf = trackProto && trackProto.getSettings;
     if (!readyStateOf || !settingsOf) return;
-    nativeZoomLevels = proto.getSupportedZoomLevels;
+    if (!nativeZoomLevels) nativeZoomLevels = proto.getSupportedZoomLevels;
     zoomLevelsShim = asNative(nativeZoomLevels, (target, self, args) => {
       const track = controllerTracks.get(self);
       if (!track || apply(readyStateOf, track, []) !== "live") return apply(target, self, args);
@@ -102,7 +102,11 @@
   const installDisplayMedia = () => {
     const devices = navigator.mediaDevices;
     const proto = devices && Object.getPrototypeOf(devices);
-    if (!proto || !proto.getDisplayMedia || displayMediaShim) return;
+    if (!proto || !proto.getDisplayMedia) return;
+    if (displayMediaShim) {
+      installZoomLevels();
+      return;
+    }
     nativeGetDisplayMedia = proto.getDisplayMedia;
     const getUserMedia = proto.getUserMedia;
     const streamProto = window.MediaStream && window.MediaStream.prototype;
@@ -113,23 +117,37 @@
     const isActive = activationState && activationState.get;
     const policy = document.featurePolicy;
     const allowsFeature = policy && policy.allowsFeature;
+    installZoomLevels();
     const controllerPrototype = controllerProto();
     const isPrototypeOf = Object.prototype.isPrototypeOf;
-    const isController = (value) => !!controllerPrototype && typeof value === "object" && value !== null && apply(isPrototypeOf, controllerPrototype, [value]);
-    const nativeRejects = (self, options, controller) =>
+    const NativeTypeError = TypeError;
+    const brandedController = nativeZoomLevels;
+    const isController = (value) => {
+      if ((typeof value !== "object" && typeof value !== "function") || value === null) return false;
+      if (!brandedController) return !!controllerPrototype && apply(isPrototypeOf, controllerPrototype, [value]);
+      try {
+        apply(brandedController, value, []);
+        return true;
+      } catch (error) {
+        return !(error instanceof NativeTypeError);
+      }
+    };
+    const badController = () =>
+      Promise.reject(new NativeTypeError("Failed to execute 'getDisplayMedia' on 'MediaDevices': Failed to read the 'controller' property from 'DisplayMediaStreamOptions': Failed to convert value to 'CaptureController'."));
+    const nativeRejects = (self, options) =>
       self !== devices ||
       (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") ||
-      (controller !== undefined && !isController(controller)) ||
       (policy && allowsFeature && !apply(allowsFeature, policy, ["display-capture"]));
     displayMediaShim = asNative(nativeGetDisplayMedia, (target, self, args) => {
       const constraints = args[0];
+      if (nativeRejects(self, constraints)) return apply(target, self, args);
       let controller;
       try {
-        controller = constraints !== undefined && constraints !== null && typeof constraints === "object" ? constraints.controller : undefined;
+        controller = constraints !== undefined && constraints !== null ? constraints.controller : undefined;
       } catch (error) {
         return Promise.reject(error);
       }
-      if (nativeRejects(self, constraints, controller)) return apply(target, self, args);
+      if (controller !== undefined && !isController(controller)) return badController();
       if (activation && isActive && !apply(isActive, activation, []))
         return Promise.reject(new DOMException("getDisplayMedia() requires transient activation (user gesture).", "InvalidStateError"));
       if (controller !== undefined && usedControllers.has(controller))
@@ -144,7 +162,6 @@
       });
     });
     proto.getDisplayMedia = displayMediaShim;
-    installZoomLevels();
     const bindController = (controller, stream) => {
       if (controller === undefined || !videoTracksOf) return stream;
       const track = apply(videoTracksOf, stream, [])[0];
