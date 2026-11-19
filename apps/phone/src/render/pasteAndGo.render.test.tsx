@@ -1,3 +1,4 @@
+import { Platform } from "react-native";
 import { act } from "react-test-renderer";
 
 const core = require("expo-modules-core") as { requireOptionalNativeModule: (name: string) => unknown };
@@ -24,7 +25,11 @@ const native = {
     return next.promise;
   }),
 };
-jest.spyOn(core, "requireOptionalNativeModule").mockImplementation((name: string) => (name === "ArdiaPhoneClipboard" ? native : realOptional(name)));
+const readsNatively = Platform.OS === "ios";
+const clipboardNative = readsNatively ? native : { offer: native.offer };
+jest.spyOn(core, "requireOptionalNativeModule").mockImplementation((name: string) => (name === "ArdiaPhoneClipboard" ? clipboardNative : realOptional(name)));
+const expoClipboard = require("expo-clipboard") as typeof import("expo-clipboard");
+jest.spyOn(expoClipboard, "getStringAsync").mockImplementation(() => native.read().then((text) => text ?? ""));
 
 const telemetry = require("../state/telemetry/telemetry") as typeof import("../state/telemetry/telemetry");
 const counted = jest.spyOn(telemetry, "countUsage").mockImplementation(() => undefined);

@@ -56,7 +56,6 @@ let inFlight: AbortController | null = null;
 let fedSources = "";
 let context: SuggestContext = { currentUrl: null, currentTabId: null };
 let paste: PasteOffer | null = null;
-let pasteAsked = 0;
 let pasteReadIn: number | null = null;
 
 export function feedSources() {
@@ -83,10 +82,9 @@ function rowsFor(text: string, remoteValues: readonly string[]): TrayRow[] {
 }
 
 function offerPaste(session: number) {
-  const asked = ++pasteAsked;
   void settled(() => clipboardOffer(), null).then((offer) => {
     const state = useSearch.getState();
-    if (!offer || asked !== pasteAsked || !state.open || state.session !== session) return;
+    if (!offer || !state.open || state.session !== session) return;
     paste = offer;
     if (!state.text.trim()) useSearch.setState({ rows: rowsFor(state.text, []) });
   });
@@ -105,7 +103,6 @@ export function endPasteRead(session: number, pasted: boolean): boolean {
   if (!state.open || state.session !== session) return false;
   if (!pasted) {
     paste = null;
-    pasteAsked++;
     if (!state.text.trim()) useSearch.setState({ rows: rowsFor(state.text, []) });
   }
   return true;
