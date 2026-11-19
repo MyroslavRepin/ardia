@@ -161,6 +161,14 @@ const V8_FRAME = /^\s*at (?:(.*?) \((.*?)\)|(.*?))\s*$/;
 const JSC_FRAME = /^\s*(.*?)@(.*?)\s*$/;
 const LOCATION = /^(.*?)(?::(\d+))?(?::(\d+))?$/;
 
+export function errorFrames(error: unknown): ExceptionFrame[] {
+  if (!error || typeof error !== "object") return [];
+  const { stack, name, message } = error as { stack?: unknown; name?: unknown; message?: unknown };
+  if (typeof stack !== "string") return [];
+  const header = typeof message === "string" && message ? `${String(name ?? "Error")}: ${message}` : String(name ?? "Error");
+  return parseStack(stack.startsWith(header) ? stack.slice(header.length) : stack);
+}
+
 export function parseStack(stack: unknown, limit = 50): ExceptionFrame[] {
   if (typeof stack !== "string") return [];
   const frames: ExceptionFrame[] = [];

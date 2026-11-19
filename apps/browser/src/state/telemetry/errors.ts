@@ -3,7 +3,7 @@ import { advanceCrashCursor, capture, consentNow, consentToken, crashCursor, loa
 import { contextAt, contextProperties, recentWebuiPages, sessionStart } from "./diagnostics";
 import type { SavedContext } from "./savedContext";
 import { logConsent, recordLog } from "./logs";
-import { errorCode, errorMessage, errorType, jsFatalKind, nativeCrashExceptions, nativeCrashTermination, parseStack, type ExceptionFrame } from "./sanitize";
+import { errorCode, errorFrames, errorMessage, errorType, jsFatalKind, nativeCrashExceptions, nativeCrashTermination, type ExceptionFrame } from "./sanitize";
 
 type Mechanism = "onerror" | "onunhandledrejection" | "react" | "react_recovered" | "console" | "native_crash" | "helper_crash";
 
@@ -30,13 +30,13 @@ const MAX_CAUSES = 3;
 
 function entryOf(error: unknown): ExceptionEntry {
   const type = errorType(error);
-  return { type, value: errorMessage(error) || type, frames: parseStack(error && typeof error === "object" ? (error as { stack?: unknown }).stack : undefined) };
+  return { type, value: errorMessage(error) || type, frames: errorFrames(error) };
 }
 
 function causeOf(error: unknown): object | null {
   try {
     const cause = error && typeof error === "object" ? (error as { cause?: unknown }).cause : undefined;
-    return cause && typeof cause === "object" ? cause : null;
+    return cause instanceof Error || Object.prototype.toString.call(cause) === "[object Error]" ? (cause as object) : null;
   } catch {
     return null;
   }

@@ -71,6 +71,21 @@ test("only error objects are followed as causes, a cause that throws ends the ch
   assert.equal(events[4].properties.$exception_types.length, 3);
 });
 
+test("an error's own message never reaches its frames, even across lines or with no frames, and a plain object is not a cause", () => {
+  const before = queued().length;
+  const multi = new Error("Failed\n    at Quarterly budget draft (customer.example:2:4)");
+  captureException(multi, "onerror");
+  const bare = new Error("Failed for someone@customer.example");
+  bare.stack = "Error: Failed for someone@customer.example";
+  captureException(bare, "onerror");
+  captureException(new Error("wrapper of a record", { cause: { name: "CustomerAlias", message: "Quarterly budget draft" } }), "onerror");
+  const events = queued().slice(before);
+  assert.equal(events.length, 3);
+  const frames = JSON.stringify(events.map((e) => e.properties.$exception_list.map((x) => x.stacktrace.frames)));
+  for (const secret of ["Quarterly", "customer.example", "someone"]) assert.equal(frames.includes(secret), false, secret);
+  assert.deepEqual(events[2].properties.$exception_values, ["wrapper of a record"]);
+});
+
 test("a native crash names its exception and the app's images at the top level, never its reason", async () => {
   stub.shellNativeModules.ArdiaApp.crashReports = async () => [
     {
